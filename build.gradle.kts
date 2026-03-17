@@ -6,6 +6,21 @@ plugins {
 
 group = "org.iotsplab.akiba"   // Change this to your own group
 
+dokka {
+    dokkaPublications.html {
+        moduleName.set("Akiba Utils Module")
+        println(layout.projectDirectory)
+        outputDirectory.set(layout.buildDirectory.dir("docs/html"))
+    }
+
+    dokkaSourceSets {
+        main {
+            sourceRoots.from(layout.projectDirectory.file("src/AkibaUtils/kotlin"))
+            classpath.from(projectDir.resolve("../akiba_framework/lib/ghidra.jar"))
+        }
+    }
+}
+
 repositories {
     mavenCentral()
 }

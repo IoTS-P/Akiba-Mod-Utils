@@ -15,15 +15,13 @@ import org.iotsplab.akiba.utils.memory.RuntimeStackFrameChain
 import java.math.BigInteger
 
 /**
- * StepInEmulator: A basic emulator that breaks at every single instruction. Useful when you need to control the exact
- *                 number of instructions executed, or to seek for deep analysis while emulating.
+ * 单步模拟器。
+ * 在每条指令处中断的基本模拟器。当你需要控制执行的确切指令数，或在模拟期间进行深入分析时非常有用。
  *
- * Due to the feature of this emulator, it could be a lot slower than other emulators. If you seek for extreme speed,
- * you are recommended to use `JitPcodeEmulator` to emulate the program.
+ * 由于此模拟器的特性，它可能比其他模拟器慢很多。如果你追求极致速度，建议使用 `JitPcodeEmulator` 来模拟程序。
  *
- * In the class, we provide a set of handlers to control the behavior of the emulator, including `beforeStep` that will
- * be done before an instruction is executed, and `afterStep` that will be done after. The `beforeStep` has a default
- * implementation.
+ * 在此类中，我们提供了一组处理器来控制模拟器的行为，包括在执行指令之前完成的 `beforeStep` 和
+ * 在执行指令之后完成的 `afterStep`。`beforeStep` 有一个默认实现。
  */
 open class StepInEmulator(
     program: Program,
@@ -34,36 +32,64 @@ open class StepInEmulator(
     private val maxExecution: Long = Long.MAX_VALUE,
     val monitor: TaskMonitor
 ) : Emulator(program, entryPoint, stackTop, logger) {
-    // If we just run, we cannot know how many instructions have been executed
+    /**
+     * 已执行的指令数。
+     */
     protected var instExecuted: Int = 0
-    // Distinct instructions executed
+
+    /**
+     * 不同的已执行指令，元素为指令地址
+     */
     protected var distinctInstExecuted: HashSet<Address> = hashSetOf()
-    // Distinct number of functions executed, the elements are the entry point of functions
+
+    /**
+     * 不同的已执行函数数量，元素为函数的入口点
+     */
     protected var distinctFunctionExecuted: HashSet<Address> = hashSetOf()
+
+    /**
+     * 数据流记录器。
+     */
     protected val dataFlowManager = DataflowManager()
+
+    /**
+     * 运行时栈帧链记录器。
+     */
     protected lateinit var stackFrameManager: RuntimeStackFrameChain
 
+    /**
+     * 组装后的数据流映射。
+     * @return 内存碎片之间的数据流关系映射。
+     */
     val assembledDataflow: Map<MemoryDebris, MemoryDebris>
         get() = dataFlowManager.assembleFlow()
+    
+    /**
+     * 组装后的零存储列表。
+     * @return 被存储零值的内存碎片段列表。
+     */
     val assembledZeroStore: List<MemoryDebris>
         get() = dataFlowManager.assembleZeroStore()
 
     init {
-        // Check the option arguments
+        // 检查选项参数
         if (options and SUPPORT_AUTO_DISASSEMBLE_AFTER_JUMP != 0)
             require(options and SUPPORT_DATA_FLOW_ANALYZER != 0) {
                 "Auto runtime disassembling requires data flow analyzer"
             }
     }
 
+    /**
+     * 初始化模拟器。初始化时检查入口地址是否可执行，如果入口地址未被识别为代码，则尝试在入口处定义函数，如果反汇编错误，则拒绝模拟。
+     */
     override fun initialization() {
         super.initialization()
         instExecuted = 0
         distinctInstExecuted.clear()
         distinctFunctionExecuted.clear()
         dataFlowManager.clear()
-        stackFrameManager = RuntimeStackFrameChain(context, stackTop)   // discard previous frame recorder
-        // If entry point is not recognized as codes, disassemble it and define a function there
+        stackFrameManager = RuntimeStackFrameChain(context, stackTop)   // 丢弃之前的帧记录器
+        // 如果入口点未被识别为代码，则对其进行反汇编并在那里定义函数
         if (options and SUPPORT_AUTO_DISASSEMBLE_ENTRYPOINT != 0 && api.getInstructionAt(entryPoint) == null) {
             logger?.info("Entry point not recognized as codes, disassemble it.")
             DisasmHelper(program).disasmFunction(entryPoint, monitor = monitor)
@@ -71,13 +97,15 @@ open class StepInEmulator(
     }
 
     /**
-     * Something needed to be done before the execution of next instruction.
+     * 在下一条指令执行之前需要完成的操作。
      *
-     * @param addr The address of the next instruction to be executed.
-     * @return What this emulator should do to the next instruction:
-     *      - NEXT_BEHAVIOR_NORMAL: Execute it normally.
-     *      - NEXT_BEHAVIOR_SKIP: Skip it.
-     *      - NEXT_BEHAVIOR_STOP: Stop the emulation immediately.
+     * @param addr 即将执行的下一条指令的地址。
+     * @param presetDisasmRegs 预设的反汇编寄存器值。
+     * @return 此模拟器对下一条指令应该采取的行为：
+     *      - NEXT_BEHAVIOR_NORMAL: 正常执行。
+     *      - NEXT_BEHAVIOR_SKIP: 跳过。
+     *      - NEXT_BEHAVIOR_STOP: 立即停止模拟。
+     * @throws IllegalStateException 如果下一条指令未找到。
      */
     @Throws(IllegalStateException::class)
     open fun beforeStep(addr: Address, presetDisasmRegs: Map<Register, BigInteger> = mapOf()): Int {
@@ -121,6 +149,9 @@ open class StepInEmulator(
         return NEXT_BEHAVIOR_NORMAL
     }
 
+    /**
+     * 开始模拟运行。每一条指令运行前，会调用 `beforeStep` 方法，并检查是否需要跳过或停止模拟。
+     */
     override fun startEmulation() {
         try {
             while (instExecuted < maxExecution) {
@@ -153,19 +184,63 @@ open class StepInEmulator(
         }
     }
 
+    /**
+     * 指令执行后的处理。
+     * 可被子类重写以添加自定义行为。
+     *
+     * @param addr 刚执行完的指令的地址。
+     */
     open fun afterStep(addr: Address) {}
 
     companion object {
+        /**
+         * 支持栈监视器。
+         */
         const val SUPPORT_STACK_MONITOR: Int = 0x01
+        
+        /**
+         * 支持数据流分析器。
+         */
         const val SUPPORT_DATA_FLOW_ANALYZER: Int = 0x02
+        
+        /**
+         * 支持跳过 CALLOTHER 指令。
+         */
         const val SUPPORT_SKIP_CALLOTHER: Int = 0x04
+        
+        /**
+         * 支持不同指令计数器。
+         */
         const val SUPPORT_DISTINCT_INSTRUCTION_COUNTER: Int = 0x08
+        
+        /**
+         * 支持不同函数计数器。
+         */
         const val SUPPORT_DISTINCT_FUNCTION_COUNTER: Int = 0x10
+        
+        /**
+         * 支持跳转后自动反汇编。
+         */
         const val SUPPORT_AUTO_DISASSEMBLE_AFTER_JUMP: Int = 0x20
+        
+        /**
+         * 支持入口点自动反汇编。
+         */
         const val SUPPORT_AUTO_DISASSEMBLE_ENTRYPOINT: Int = 0x40
 
+        /**
+         * 正常执行行为。
+         */
         const val NEXT_BEHAVIOR_NORMAL: Int = 0
+        
+        /**
+         * 跳过行为。
+         */
         const val NEXT_BEHAVIOR_SKIP: Int = 1
+        
+        /**
+         * 停止行为。
+         */
         const val NEXT_BEHAVIOR_STOP: Int = 2
     }
 }

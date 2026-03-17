@@ -3,6 +3,14 @@ package org.iotsplab.akiba.utils.varnode
 import ghidra.program.model.listing.Program
 import ghidra.program.model.pcode.Varnode
 
+/**
+ * 将 Varnode 转换为美观的字符串表示。
+ * 根据 Varnode 的类型（地址、寄存器、唯一、常量）生成格式化的描述。
+ *
+ * @param program Ghidra 程序对象，用于获取寄存器名称。
+ * @return 格式化的字符串表示。
+ * @throws UnsupportedOperationException 如果是不支持的类型或大小。
+ */
 @Throws(UnsupportedOperationException::class)
 fun Varnode.toPrettyString(program: Program? = null): String {
     return when {

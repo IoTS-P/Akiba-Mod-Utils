@@ -30,26 +30,27 @@ val EmulatorHelper.currentFunction: Function
     get() = program.functionManager.getFunctionContaining(pc)!!
 
 /**
- * Run the emulator until the condition is met, no need to create breakpoints
- * Attention: This may cause huge time cost because we need to step and check every instruction!
+ * 运行模拟器直到满足条件，无需创建断点。
+ * 注意：这可能导致巨大的时间开销，因为我们需要单步执行并检查每条指令！
  *
- * @param condition The condition to be met
- * @throws CancelledException When the task monitor is set cancelled while executing instructions
+ * @param condition 要满足的条件。
+ * @param monitor 任务监视器。
+ * @throws CancelledException 当在执行指令期间任务监视器被取消时抛出。
  */
 @Throws(CancelledException::class)
 fun EmulatorHelper.until(condition: () -> Boolean, monitor: TaskMonitor) {
     while (!condition()) {
         if (!step(monitor))
-            return      // If the emulator exited unexpectedly, we can get the error info through `lastError`
+            return      // 如果模拟器意外退出，我们可以通过 `lastError` 获取错误信息
     }
 }
 
 /**
- * Run the emulator until the next instruction matches the condition, no need to create breakpoints
- * Attention: This may cause huge time cost if presetBreakpoints is not set, because we need to step and check every
- *            instruction!
+ * 运行模拟器直到下一条指令匹配条件，无需创建断点。
+ * 注意：如果没有设置 presetBreakpoints，这可能导致巨大的时间开销，因为我们需要单步执行并检查每条指令！
  *
- * @param condition The condition to be met
+ * @param condition 要满足的条件。
+ * @param presetBreakpoints 是否预先设置断点，默认为 true。
  */
 fun<T: Predicate<Instruction>> EmulatorHelper.until(condition: T, presetBreakpoints: Boolean = true) {
     if (presetBreakpoints) {
@@ -65,10 +66,10 @@ fun<T: Predicate<Instruction>> EmulatorHelper.until(condition: T, presetBreakpoi
 }
 
 /**
- * Run the emulator until the next instruction matches the condition, no need to create breakpoints
- * Attention: This may cause huge time cost because we need to step and check every instruction!
+ * 运行模拟器直到下一条指令匹配条件，无需创建断点。
+ * 注意：这可能导致巨大的时间开销，因为我们需要单步执行并检查每条指令！
  *
- * @param addr The addresses to break
+ * @param addr 要中断的地址列表。
  */
 fun EmulatorHelper.until(addr: List<Address>) {
     addr.forEach { setBreakpoint(it) }
@@ -80,9 +81,9 @@ fun EmulatorHelper.until(addr: List<Address>) {
 }
 
 /**
- * Pre-create all breakpoints for all instructions that satisfy the condition
+ * 为所有满足条件的指令预先创建断点。
  *
- * @param condition The condition to be met
+ * @param condition 要满足的条件。
  */
 fun<T: Predicate<Instruction>> EmulatorHelper.setBreakpointsIf(condition: T) {
     program.listing.getInstructions(true).forEach {
@@ -92,9 +93,10 @@ fun<T: Predicate<Instruction>> EmulatorHelper.setBreakpointsIf(condition: T) {
 }
 
 /**
- * Analyze the data flow of the next instruction, the analysis results will be saved into the manager
+ * 分析下一条指令的数据流，分析结果将保存到管理器中。
  *
- * @param manager The manager to save the analysis results
+ * @param manager 保存分析结果的管理器。
+ * @throws IllegalStateException 如果下一条指令为 null。
  */
 @Throws(IllegalStateException::class)
 fun EmulatorHelper.analyzeNextInstructionDataflow(manager: DataflowManager) {
@@ -102,7 +104,9 @@ fun EmulatorHelper.analyzeNextInstructionDataflow(manager: DataflowManager) {
 }
 
 /**
- * Skip the next instruction that should be executed in the short future
+ * 跳过接下来应该执行的指令。
+ *
+ * @throws IllegalStateException 如果下一条指令为 null。
  */
 @Throws(IllegalStateException::class)
 fun EmulatorHelper.skipNext() {
@@ -110,18 +114,18 @@ fun EmulatorHelper.skipNext() {
         ?: throw IllegalStateException("Next instruction is null")
     ))
 
-    // During the emulation, the Thumb status could be lost if we skip instructions containing CALLOTHERs while
-    // the previous instruction is not a jump. So we need to restore it every time we skip instructions.
+    // 在模拟过程中，如果我们跳过包含 CALLOTHER 的指令而前一条指令不是跳转，
+    // Thumb 状态可能会丢失。因此每次跳过指令时都需要恢复它。
     if (Regex("ARM:(LE|BE):32:Cortex").matches(this.language.languageID.idAsString)) {
         this.contextRegister = RegisterValue(this.language.getRegister("TMode"), 1.toBigInteger())
     }
 }
 
 /**
- * Force the emulation to exit the last function executed, and to go back to the caller function
+ * 强制模拟退出最后执行的函数，并返回到调用者函数。
  *
- * @param frameStatus The status of the stack frame
- * @throws IllegalStateException If the stack frame has no caller function, unable to return
+ * @param frameStatus 栈帧状态。
+ * @throws IllegalStateException 如果栈帧没有调用者函数，无法返回。
  */
 @Throws(IllegalStateException::class)
 fun EmulatorHelper.returnDirectly(frameStatus: RuntimeStackFrameChain) {
@@ -138,11 +142,10 @@ fun EmulatorHelper.returnDirectly(frameStatus: RuntimeStackFrameChain) {
 }
 
 /**
- * Foresee the next instruction that will be executed according to the context at the moment before this instruction is
- * executed. If the instruction has no possibility to jump PC, returns the address of the next instruction, if there is
- * no instructions ahead, return null.
+ * 根据在此指令执行之前的上下文预测将要执行的下一条指令。
+ * 如果该指令没有跳转 PC 的可能性，则返回下一条指令的地址；如果前方没有指令，则返回 null。
  *
- * @return The address of the next instruction or null if there is no instructions ahead
+ * @return 下一条指令的地址，如果前方没有指令则返回 null。
  */
 fun EmulatorHelper.foreseeNextInstruction(): Instruction? {
     nextInst ?: return null
@@ -163,18 +166,18 @@ fun EmulatorHelper.foreseeNextInstruction(): Instruction? {
             else -> try { trees.addPcode(it) } catch (_: Exception) {}
         }
     }
-    // No jumps, just next instruction (it may be null)
-    // We don't consider arch-specific instructions like `svc` in ARM
+    // 没有跳转，就是下一条指令（可能为 null）
+    // 我们不考虑像 ARM 中的 `svc` 这样的架构特定指令
     return ni.next
 }
 
 
 
 /**
- * Foresee the next instruction that will be executed in this function.
- * The difference between this function and `foreseeNextInstruction` is that this function will ignore calls.
- * If the instruction is a call, this function will skip the call process and returns the fall-through address.
- * If the instruction is a jump, this function will check whether the target is in the function. If not, return null.
+ * 预测将在本函数中执行的下一条指令。
+ * 此函数与 `foreseeNextInstruction` 的区别在于它会忽略调用。
+ * 如果该指令是调用，此函数将跳过调用过程并返回后续地址。
+ * 如果该指令是跳转，此函数将检查目标是否在函数内。如果不在，则返回 null。
  */
 fun EmulatorHelper.foreseeNextInstructionInFunc(): Instruction? {
     nextInst ?: return null

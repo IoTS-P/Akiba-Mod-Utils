@@ -7,26 +7,52 @@ import ghidra.util.task.TaskMonitor
 import org.apache.logging.log4j.Logger
 
 /**
- * BasicBlockEmulator: A basic block emulator that emulates a program by breaking at every basic blocks' start and end.
+ * 基本块模拟器。
+ * 通过在每个基本块的开始和结束处中断来模拟程序执行。
  *
- * The basic block is got through high functions, that are consisted of high-level P-codes.
+ * 基本块通过由高级 P-code 组成的高级函数获取。
  *
- * In the class, we provide a set of handlers to control the behavior of the emulator, you can extend this class and
- * override `blockStartHandler` and `blockEndHandler` to do something at the start/end of a basic block.
+ * 在此类中，我们提供了一组处理器来控制模拟器的行为，你可以继承此类并重写
+ * `blockStartHandler` 和 `blockEndHandler` 以便在基本块开始/结束时执行一些操作。
  */
 open class BasicBlockEmulator(
     program: Program,
     entryPoint: Address,
     stackTop: Address,
     logger: Logger? = null,
-    protected var maxExecution: Int = Int.MAX_VALUE     // The number of basic blocks executed
+    protected var maxExecution: Int = Int.MAX_VALUE     // 执行的基本块数量
 ) : Emulator(program, entryPoint, stackTop, logger) {
+    /**
+     * 执行的基本块数量。
+     */
     protected var blockExecuted: Int = 0
+
+    /**
+     * 已执行的函数集合。
+     */
     protected val funcExecuted: HashSet<Address> = hashSetOf()
+
+    /**
+     * 动态存储所有基本块结束的地址，并作为断点使用。
+     */
     protected val endBreakpoints: HashSet<Address> = hashSetOf()
+
+    /**
+     * 动态存储所有基本块开始的地址，并作为断点使用。
+     */
     protected val startBreakpoints: HashSet<Address> = hashSetOf()
+
+    /**
+     * 反编译接口实例。
+     */
     protected val decompInterface: DecompInterface = getDecompiler()
 
+    /**
+     * 获取反编译器实例。
+     *
+     * @return 配置好的反编译器对象。
+     * @throws IllegalStateException 如果无法打开程序进行反编译。
+     */
     private fun getDecompiler(): DecompInterface {
         val decompInterface = DecompInterface()
         decompInterface.toggleSyntaxTree(true)
@@ -35,11 +61,23 @@ open class BasicBlockEmulator(
         return decompInterface
     }
 
+    /**
+     * 基本块开始处理器。
+     * 在每个基本块开始执行时调用，可被子类重写以添加自定义行为。
+     *
+     * @throws Exception 如果处理过程中发生错误。
+     */
     @Throws(Exception::class)
     open fun blockStartHandler() {
         logger?.trace("Block start handler")
     }
 
+    /**
+     * 基本块结束处理器。
+     * 在每个基本块执行结束时调用，可被子类重写以添加自定义行为。
+     *
+     * @throws Exception 如果处理过程中发生错误。
+     */
     @Throws(Exception::class)
     open fun blockEndHandler() {
         logger?.trace("Block end handler")
@@ -53,25 +91,25 @@ open class BasicBlockEmulator(
                     blockStartHandler()
                 val currentFunc = api.getFunctionContaining(context.pc)
                     ?: throw IllegalStateException("Orphan code detected at ${context.pc}")
-                // We add breakpoints dynamically, when a new function is executed, add breakpoints to all blocks
+                // 我们动态添加断点，当执行新函数时，为所有基本块添加断点
                 if (!funcExecuted.contains(currentFunc.entryPoint)) {
                     funcExecuted.add(currentFunc.entryPoint)
                     val highFunc = decompInterface.decompileFunction(
                         currentFunc, DECOMPILE_TIMEOUT, TaskMonitor.DUMMY).highFunction
                     highFunc.basicBlocks.forEach { block ->
-                        // Set breakpoints to all starts of blocks
+                        // 为所有基本块的开始设置断点
                         if (!startBreakpoints.contains(block.start)) {
                             startBreakpoints.add(block.start)
                             logger?.debug("Added breakpoint at block start: {}", block.start)
-                            // To avoid repeating breakpoints
+                            // 避免重复断点
                             if (!endBreakpoints.contains(block.start))
                                 context.setBreakpoint(block.start)
                         }
-                        // Set breakpoints to all ends of blocks
+                        // 为所有基本块的结束设置断点
                         if (!endBreakpoints.contains(block.stop)) {
                             endBreakpoints.add(block.stop)
                             logger?.debug("Added breakpoint at block end: {}", block.stop)
-                            // To avoid repeating breakpoints
+                            // 避免重复断点
                             if (!startBreakpoints.contains(block.stop))
                                 context.setBreakpoint(block.stop)
                         }
@@ -94,7 +132,9 @@ open class BasicBlockEmulator(
     }
 
     companion object {
-
+        /**
+         * 反编译超时时间（秒）。
+         */
         const val DECOMPILE_TIMEOUT: Int = 60
     }
 }

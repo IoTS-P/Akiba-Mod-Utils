@@ -5,11 +5,19 @@ import ghidra.program.model.pcode.PcodeOp
 import ghidra.program.model.pcode.Varnode
 import org.iotsplab.akiba.utils.memory.MemoryUtil
 
+/**
+ * P-code 工具类。
+ * 提供解析和处理 P-code 指令的实用方法。
+ */
 object PcodeUtil {
     /**
-     * Get data flow source and destination varnodes of a LOAD
-     * @param op PcodeOp to parse
-     * @return Pair of Varnodes, <source, dest>
+     * 解析 LOAD 指令的数据流源和目标 varnode。
+     *
+     * @param program Ghidra 程序对象。
+     * @param op 要解析的 P-code 操作对象。
+     * @return Varnode 对，<源，目标>。
+     * @throws IllegalArgumentException 如果 PcodeOp 不是 LOAD 操作或地址空间无效。
+     * @throws AssertionError 如果断言检查失败。
      */
     @Throws(IllegalArgumentException::class, AssertionError::class)
     fun parseLoad(program: Program, op: PcodeOp): Pair<Varnode, Varnode> {
@@ -26,9 +34,13 @@ object PcodeUtil {
     }
 
     /**
-     * Get data flow source and destination varnodes of a STORE
-     * @param op PcodeOp to parse
-     * @return Pair of Varnodes, <source, dest>
+     * 解析 STORE 指令的数据流源和目标 varnode。
+     *
+     * @param program Ghidra 程序对象。
+     * @param op 要解析的 P-code 操作对象。
+     * @return Varnode 对，<源，目标>。
+     * @throws IllegalArgumentException 如果 PcodeOp 不是 STORE 操作或地址空间无效。
+     * @throws AssertionError 如果断言检查失败。
      */
     @Throws(IllegalArgumentException::class, AssertionError::class)
     fun parseStore(program: Program, op: PcodeOp): Pair<Varnode, Varnode> {

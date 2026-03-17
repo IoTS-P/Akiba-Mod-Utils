@@ -16,7 +16,11 @@ import java.math.BigInteger
 import java.util.concurrent.locks.ReentrantLock
 
 /**
- * Emulator: class for emulating Ghidra program through Ghidra default emulator
+ * 模拟器类。
+ * 通过 Ghidra 默认模拟器模拟 Ghidra 程序的执行。
+ *
+ * @property entryPoint 模拟的入口点。
+ * @property stackTop 模拟的初始栈顶地址。
  */
 open class Emulator(
     protected val program: Program,
@@ -24,12 +28,25 @@ open class Emulator(
     var stackTop: Address,
     protected val logger: Logger? = null
 ) : Closeable {
+    /**
+     * 模拟器上下文。
+     */
     lateinit var context: EmulatorHelper
+
+    /**
+     * 使用的 Ghidra 模拟器
+     */
     lateinit var emulator: DefaultEmulator
+
+    /**
+     * Ghidra Program API，用于快捷访问。
+     */
     lateinit var api: FlatProgramAPI
 
-    // Default memory fault handler: creating the address that causes memory fault and treat it as accessible
-    // In default handler, R/W instructions in 0 page/the highest page are forbidden.
+    /**
+     * 默认内存错误处理器：创建导致内存错误的地址并将其视为可访问
+     * 在默认处理器中，0 页/最高页的读/写指令是被禁止的。
+     */
     protected var mfh: MemoryFaultHandler = object : MemoryFaultHandler {
         @Throws(IllegalStateException::class)
         override fun uninitializedRead(addr: Address, size: Int, buf: ByteArray, bufOffset: Int): Boolean {
@@ -63,6 +80,9 @@ open class Emulator(
         }
     }
 
+    /**
+     * 模拟器初始化。考虑到不同架构可能需要不同的初始化逻辑，在初始化过程中会调用架构特定的初始化函数（如果有）。
+     */
     @Throws(UnsupportedOperationException::class)
     open fun initialization() {
         context = EmulatorHelper(program)
@@ -75,6 +95,10 @@ open class Emulator(
         emulator.setExecuteAddress(entryPoint.offset)
     }
 
+    /**
+     * 开始模拟执行。
+     * 执行单条指令直到完成或发生错误。
+     */
     open fun startEmulation() {
         try {
             emulator.executeInstruction(true, TaskMonitor.DUMMY)
@@ -83,8 +107,16 @@ open class Emulator(
         }
     }
 
+    /**
+     * 最终化处理。
+     * 可在子类中重写以添加清理逻辑。
+     */
     open fun finalization() {}
 
+    /**
+     * 启动模拟器。
+     * 按顺序执行初始化、模拟和最终化步骤。
+     */
     open fun go() {
         try {
             initialization()
@@ -101,6 +133,10 @@ open class Emulator(
         private var idLock: ReentrantLock = ReentrantLock()
         private var id = 0
 
+        /**
+         * 架构特定的初始化函数映射。
+         * 键为架构标识符，值为初始化闭包。
+         */
         val archSpecifiedInit: Map<String, (EmulatorHelper) -> Unit> = mapOf(
             "ARM:LE:32:Cortex" to { emu ->
                 emu.writeRegister("TB", 1)

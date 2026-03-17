@@ -10,11 +10,17 @@ import org.iotsplab.akiba.utils.function.allInstructions
 import java.io.Closeable
 import java.lang.IllegalStateException
 
+/**
+ * 函数调用引用图。
+ * 构建和管理程序中函数之间的调用关系图，用于分析调用链和识别特殊函数。
+ *
+ * @param program Ghidra 程序对象。
+ */
 class FuncCallXrefGraph (
     private val program: Program
 ): Closeable {
-    // All vertexes are entry points of functions.
-    // Functions are not stable and can be changed at any time, to avoid unstability, use addresses instead.
+    // 所有顶点都是函数的入口点地址。
+    // 函数不稳定且可能随时变化，为避免不稳定性，使用地址而不是函数对象。
     class FuncCallXrefEdge(private val start: Address, private val end: Address): GEdge<Address> {
         override fun getStart(): Address { return start }
         override fun getEnd(): Address { return end }
@@ -22,13 +28,14 @@ class FuncCallXrefGraph (
     private val innerGraph: GDirectedGraph<Address, FuncCallXrefEdge> = GraphFactory.createDirectedGraph()
 
     /**
-     * getFunctionsOfNoCaller: Get functions which no one calls them.
+     * 获取没有调用者的函数。
      *
-     * @return A list of functions that has no INs.
+     * @return 没有任何入边的函数列表（即没有被其他函数调用的函数）。
+     * @throws ConcurrentModificationException 如果程序函数列表在图使用期间发生变化。
      */
     @Throws(ConcurrentModificationException::class)
     fun getFunctionsOfNoCaller(): List<Function> {
-        // we don't allow functions being changed while using the graph
+        // 我们不允许在使用图时函数发生变化
         try {
             return innerGraph.vertices.filter { v -> innerGraph.getPredecessors(v).isEmpty() } .map { v ->
                 program.listing.getFunctionAt(v)!!
@@ -41,9 +48,9 @@ class FuncCallXrefGraph (
     }
 
     /**
-     * getLeafFunctions: Get functions which don't call.
+     * 获取叶子函数（不调用其他函数的函数）。
      *
-     * @return A list of functions that has no OUTs.
+     * @return 没有任何出边的函数列表（即不调用其他函数的函数）。
      */
     fun getLeafFunctions(): List<Function> {
         try {
@@ -58,15 +65,14 @@ class FuncCallXrefGraph (
     }
 
     /**
-     * rebuild: Generate a graph from a program. It can be used for update and initialization.
+     * 重建图。
+     * 从程序中生成图，可用于初始化和更新。
      *
-     * Will generate a graph of calling relationship between functions.
-     * Especially, if a function has no return and its last instruction is a jump instead of a call,
-     * it will be treated as a call (only when it is jumped into another function).
+     * 将生成函数之间调用关系的图。
+     * 特别注意：如果一个函数没有返回值且最后一条指令是跳转而不是调用，它将被视为调用（仅当跳转到另一个函数时）。
      *
-     * @param includeRecursive Whether to include recursive calls.
-     * @param extraEdges Extra edges to add to the graph. If you found calls that isn't found by Ghidra through
-     *                   indirect call analysis, etc., you can add here
+     * @param includeRecursive 是否包含递归调用。
+     * @param extraEdges 要添加到图中的额外边。如果通过间接调用分析等方式发现 Ghidra 未找到的调用，可以添加到这里。
      */
     @Throws(ConcurrentModificationException::class)
     fun rebuild(includeRecursive: Boolean, extraEdges: List<FuncCallXrefEdge> = listOf()) {
@@ -79,7 +85,7 @@ class FuncCallXrefGraph (
                         return@forEach
                     val toFunc = program.listing.getFunctionContaining(ref.toAddress) ?:
                         throw IllegalStateException("Broken xref")
-                    // Recursive call not included
+                    // 递归调用不包含在内
                     if (fromFunc != toFunc || includeRecursive)
                         innerGraph.addEdge(FuncCallXrefEdge(fromFunc.entryPoint, ref.toAddress))
                 } else if (ReferenceConstants.REFERENCE_JUMP.contains(ref.referenceType)) {
@@ -89,8 +95,7 @@ class FuncCallXrefGraph (
                         return@forEach
                     if (fromFunc == f)
                         return@forEach
-                    // If the reference is a jump, only accept those which is the last instruction of a function
-                    // and target function is not source function
+                    // 如果引用是跳转，只接受那些是函数最后一条指令且目标函数不是源函数的跳转
                     innerGraph.addEdge(FuncCallXrefEdge(fromFunc.entryPoint, ref.toAddress))
                 }
             }
@@ -99,7 +104,7 @@ class FuncCallXrefGraph (
     }
 
     /**
-     * close: Close the graph and release resources.
+     * 关闭图并释放资源。
      */
     override fun close() {
         innerGraph.removeEdges(innerGraph.edges)
@@ -107,6 +112,13 @@ class FuncCallXrefGraph (
     }
 
     companion object {
+        /**
+         * 从 Ghidra 程序中创建函数调用引用图。
+         *
+         * @param program Ghidra 程序对象。
+         * @param includeRecursive 是否包含递归调用。
+         * @return 函数调用引用图对象。
+         */
         fun fromProgram(program: Program, includeRecursive: Boolean = false): FuncCallXrefGraph {
             val graph = FuncCallXrefGraph(program)
             graph.rebuild(includeRecursive)

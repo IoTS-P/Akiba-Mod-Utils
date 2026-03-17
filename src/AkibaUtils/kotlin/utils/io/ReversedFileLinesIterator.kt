@@ -4,6 +4,12 @@ import kotlinx.io.files.FileNotFoundException
 import java.io.RandomAccessFile
 import java.nio.file.Path
 
+/**
+ * 反向文件行迭代器。
+ * 从文件末尾开始逐行向前迭代，支持大文件的高效反向遍历。
+ *
+ * @param path 要迭代的文件路径。
+ */
 class ReversedFileLinesIterator(private val path: Path): Iterator<String> {
     private var position: Long = path.toFile().length()
     private val lineBreak = "\n".toByteArray()[0]
@@ -11,6 +17,9 @@ class ReversedFileLinesIterator(private val path: Path): Iterator<String> {
     private var bufPtr = 0
     private var currentLine = StringBuilder()
 
+    /**
+     * 获取下一个行。
+     */
     override fun next(): String {
         RandomAccessFile(path.toFile(), "r").use { file ->
             while (bufPtr >= 0) {
@@ -56,6 +65,9 @@ class ReversedFileLinesIterator(private val path: Path): Iterator<String> {
         }
     }
 
+    /**
+     * 检查是否还有下一个行。
+     */
     override fun hasNext(): Boolean {
         return position > 0 || bufPtr > 0
     }

@@ -30,3 +30,12 @@ You need to clone the `Akiba` main repository and pull all submodules, then buil
 ```
 
 The built file will be located at `build/libs/amod-AkibaUtils-<version>.jar`
+
+## Documentation
+
+Akiba Mod Utils uses Dokka to generate documentation. Use the following command to generate HTML documentation in localhost (63342 in default):
+
+```shell
+./gradlew akiba_mod_utils:dokkaGenerateHtml
+# http://localhost:63342/Akiba/subprojects/akiba_mod_utils/build/docs/html/
+```

@@ -30,3 +30,12 @@ Akiba 实用模块中包含多个类与方法，封装 Ghidra 的不同部分，
 ```
 
 构建得到的文件为 `build/libs/amod-AkibaUtils-<version>.jar`
+
+## 文档
+
+Akiba Mod Utils 使用 Dokka 构建文档，使用下面的命令可在本地开放文档 Web 端口（默认为 63342 端口）：
+
+```shell
+./gradlew akiba_mod_utils:dokkaGenerateHtml
+# http://localhost:63342/Akiba/subprojects/akiba_mod_utils/build/docs/html/
+```
