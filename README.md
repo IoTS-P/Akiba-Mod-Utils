@@ -39,3 +39,5 @@ Akiba Mod Utils uses Dokka to generate documentation. Use the following command 
 ./gradlew akiba_mod_utils:dokkaGenerateHtml
 # http://localhost:63342/Akiba/subprojects/akiba_mod_utils/build/docs/html/
 ```
+
+Note: Current documentation only contains Chinese.

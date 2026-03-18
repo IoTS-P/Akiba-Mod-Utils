@@ -27,24 +27,65 @@ repositories {
 
 val PublicConfiguration by configurations.register("Public")
 
+data class ModuleMetadata(
+    val moduleName: String,         // All codes should be located in `src/$moduleName/`
+    val mainClassPath: String,      // Full class path of main class
+    val authors: List<String>,
+    val version: String,
+    val briefDescription: String
+) {
+    val doc: Map<String, String>   // Key: Documentation language, Value: Documentation
+    val configuration by configurations.register(moduleName)
+
+    init {
+        val d = mutableMapOf<String, String>()
+        for ((lang, docDir) in ModuleMetadata.docDir) {
+            val docFile = projectDir.resolve("$docDir/$moduleName.md")
+            if (docFile.exists())
+                d[lang] = docFile.readText()
+        }
+        doc = d
+    }
+
+    companion object {
+        val docDir = mapOf(
+            "en" to "usages",
+            "zh" to "usages_zh"
+        )
+    }
+}
+
 /***********************************************************************************************************************
  * MODULE DEFINITION START, DO NOT CHANGE CODES OUTSIDE THIS BLOCK
 ***********************************************************************************************************************/
 
-val modNames: Map<String, String> = mapOf(
-    "AkibaUtils" to "1.0"
+// Append your module here
+val localModules = listOf(
+    ModuleMetadata(
+        moduleName = "AkibaUtils",
+        mainClassPath = "org.iotsplab.akiba.module.AkibaUtils",
+        authors = listOf("Hornos3"),
+        version = "1.0",
+        briefDescription = "Akiba Utils Module"
+    )
 )
 
-val underDevelopmentModules: List<String> = listOf()
-
-val mods = modNames.keys.associate {
-    it to configurations.register(it)
+val lc: Map<String, Configuration> = localModules.associate {
+    it.moduleName to it.configuration
 }
 
+// Modules that are deprecated and will not be built
+val deprecatedModules: List<String> = listOf()
+
+// Modules that are under development and will not be built
+val underDevelopmentModules: List<String> = listOf()
+
+// Add your dependencies here
 dependencies {
     PublicConfiguration(project(":akiba_framework"))
 }
 
+// If there are any finalize tasks in some modules, add them here
 val finalizeTasks: Map<String, Jar.() -> Unit> = mapOf()
 
 /***********************************************************************************************************************
@@ -52,37 +93,41 @@ val finalizeTasks: Map<String, Jar.() -> Unit> = mapOf()
 ***********************************************************************************************************************/
 
 fun moduleDependency(modules: List<String>): ConfigurableFileCollection {
-    return files(modules.map { "build/libs/amod-${it}-${modNames[it]}.jar" }.toTypedArray())
+    return files(modules.map { name ->
+        val metadata = localModules.first { it.moduleName == name }
+        "build/libs/amod-$name-${metadata.version}.jar"
+    }.toTypedArray())
 }
 
-modNames.forEach { moduleName, ver ->
+localModules.forEach { module ->
     val globalGroup = group
 
-    configurations[moduleName].extendsFrom(configurations["Public"])
+    module.configuration.extendsFrom(configurations["Public"])
 
-    sourceSets.create(moduleName) {
-        kotlin.srcDir("src/${moduleName}/kotlin")
+    sourceSets.create(module.moduleName) {
+        kotlin.srcDir("src/${module.moduleName}/kotlin")
 
-        compileClasspath += configurations[moduleName]
-        runtimeClasspath += configurations[moduleName]
+        compileClasspath += module.configuration
+        runtimeClasspath += module.configuration
     }
 
     // Exclude modules that are under development
-    if (!underDevelopmentModules.contains(moduleName)) {
-        tasks.register<Jar>("moduleJar-$moduleName") {
+    if (underDevelopmentModules.firstOrNull { it == module.moduleName } == null
+        && deprecatedModules.firstOrNull { it == module.moduleName } == null) {
+        tasks.register<Jar>("moduleJar-${module.moduleName}") {
             group = globalGroup as String
-            archiveBaseName.set("amod-$moduleName")
-            archiveVersion.set(ver)
+            archiveBaseName.set("amod-${module.moduleName}")
+            archiveVersion.set(module.version)
 
             duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 
-            from(sourceSets[moduleName].output) {
+            from(sourceSets[module.moduleName].output) {
                 duplicatesStrategy = DuplicatesStrategy.EXCLUDE
             }
 
             // Pack all jars except Akiba and Ghidra
             from(
-                configurations[moduleName].resolve()
+                module.configuration.resolve()
                     .filter {
                         it.name.endsWith("jar") &&
                                 // exclude all common jar
@@ -97,7 +142,7 @@ modNames.forEach { moduleName, ver ->
             exclude("META-INF/*.RSA", "META-INF/*.SF", "META-INF/*.DSA", "**/.*/**")
 
             // Write dependency class names into 'META-INF/module-deps'
-            val dependencyClassNames = configurations[moduleName].resolve()
+            val dependencyClassNames = module.configuration.resolve()
                 .filter { it.name.startsWith("amod") }
                 .map { group + "." + it.name.substringAfter("amod-").substringBefore("-") }
             val depFile = temporaryDir.resolve("META-INF/module-deps")
@@ -106,10 +151,23 @@ modNames.forEach { moduleName, ver ->
             from(depFile) { into("META-INF") }
 
             manifest {
-                attributes["Main-Class"] = "$group.$moduleName"
+                attributes["Main-Class"] = module.mainClassPath
+                attributes["Module-Name"] = module.moduleName
+                attributes["Module-Version"] = module.version
+                attributes["Module-Author"] = module.authors.joinToString(", ")
+                attributes["Module-Description"] = module.briefDescription
             }
 
-            finalizeTasks[moduleName]?.invoke(this)
+            // Create directory `docs` and write documentation of different languages into different files
+            val docsDir = temporaryDir.resolve("docs")
+            docsDir.mkdirs()
+            module.doc.forEach { (lang, text) ->
+                docsDir.resolve("$lang.md").writeText(text)
+            }
+
+            from(docsDir) { into("docs") }
+
+            finalizeTasks[module.moduleName]?.invoke(this)
         }
     }
 }
