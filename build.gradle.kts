@@ -1,3 +1,5 @@
+import java.util.jar.JarInputStream
+
 plugins {
     kotlin("jvm") version "2.1.20"
     kotlin("plugin.serialization") version "2.1.20"
@@ -144,7 +146,13 @@ localModules.forEach { module ->
             // Write dependency class names into 'META-INF/module-deps'
             val dependencyClassNames = module.configuration.resolve()
                 .filter { it.name.startsWith("amod") }
-                .map { group + "." + it.name.substringAfter("amod-").substringBefore("-") }
+                .mapNotNull {
+                    file(it).inputStream().use { stream ->
+                        JarInputStream(stream).use { jarStream ->
+                            jarStream.manifest?.mainAttributes?.getValue("Main-Class")
+                        }
+                    }
+                }
             val depFile = temporaryDir.resolve("META-INF/module-deps")
             depFile.parentFile.mkdirs()
             depFile.writeText(dependencyClassNames.joinToString("\n"))

@@ -1,4 +1,5 @@
-import org.iotsplab.akiba.module.AkibaModule
+package org.iotsplab.akiba.module
+
 import org.iotsplab.akiba.utils.PureDependency
 
 @PureDependency
