@@ -1,3 +1,7 @@
+@file:Suppress("DEPRECATION")
+// Uses legacy `EmulatorHelper` API, deprecated in Ghidra 12.0 in favor of
+// `ghidra.pcode.emu.PcodeEmulator`. See utils/emulator/Emulator.kt for the
+// rationale for keeping the legacy API until the full migration is done.
 package org.iotsplab.akiba.structure
 
 import ghidra.app.emulator.EmulatorHelper

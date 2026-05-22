@@ -1,3 +1,21 @@
+@file:Suppress("DEPRECATION")
+/*
+ * Ghidra 12.0+ deprecates the legacy p-code emulation API
+ * (`EmulatorHelper`, `DefaultEmulator`, `Emulator` interface, `MemoryFaultHandler`)
+ * in favor of `ghidra.pcode.emu.PcodeEmulator`.
+ *
+ * The new `PcodeEmulator` API is a redesign rather than a drop-in rename:
+ * - state/register/memory access is delegated to a `PcodeExecutorState`,
+ * - fault handling is replaced by `PcodeEmulationCallbacks`,
+ * - breakpoints/run/step semantics are restructured around `PcodeThread`.
+ *
+ * Porting Akiba's emulator subsystem to `PcodeEmulator` is a non-trivial
+ * architectural change and is tracked as a separate work item. Until that
+ * port lands, this file (and the related emulator/memory/structure files)
+ * keep using the legacy API, which is still fully functional in Ghidra 12.1.
+ * The DEPRECATION suppressions are applied at file scope so the migration
+ * surface is explicit and easy to locate via a project-wide search.
+ */
 package org.iotsplab.akiba.utils.emulator
 
 import ghidra.app.emulator.DefaultEmulator
