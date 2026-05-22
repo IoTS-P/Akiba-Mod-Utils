@@ -17,7 +17,7 @@ import org.iotsplab.akiba.utils.memory.MemoryUtil.Companion.readProgramBytesToUT
 class AsciiSequenceSearcher(program: Program,
                             minLength: Int = DEFAULT_ASCII_SEARCH_MIN_LENGTH,
                             maxLength: Int = DEFAULT_ASCII_SEARCH_MAX_LENGTH,
-                            postMapHandler: (MemoryMatch) -> StringSearchResult? = {
+                            postMapHandler: (MemoryMatch<*>) -> StringSearchResult? = {
                                 r -> stripResult(program, r)
                             })
     : RegexSearcher(program, asciiRegexOfLength(minLength, maxLength), postMapHandler = postMapHandler) {
@@ -31,7 +31,7 @@ class AsciiSequenceSearcher(program: Program,
          * @return 清理后的字符串搜索结果，如果结果为空则返回 null。
          */
         @JvmStatic
-        fun stripResult(program: Program, r: MemoryMatch): StringSearchResult? {
+        fun stripResult(program: Program, r: MemoryMatch<*>): StringSearchResult? {
             var start = r.address
             var end = r.address.add(r.length.toLong())
             var realSize = r.length

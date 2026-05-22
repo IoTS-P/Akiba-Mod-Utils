@@ -5,6 +5,7 @@ import ghidra.features.base.memsearch.bytesource.ProgramByteSource
 import ghidra.features.base.memsearch.format.SearchFormat
 import ghidra.features.base.memsearch.gui.SearchSettings
 import ghidra.features.base.memsearch.matcher.RegExByteMatcher
+import ghidra.features.base.memsearch.matcher.SearchData
 import ghidra.features.base.memsearch.searcher.MemoryMatch
 import ghidra.features.base.memsearch.searcher.MemorySearcher
 import ghidra.program.flatapi.FlatProgramAPI
@@ -26,7 +27,7 @@ import java.util.regex.Pattern
  */
 open class RegexSearcher(protected val program: Program, private val predicate: Pattern,
                  private val clearOverlap: Boolean = true, private val clearConflict: Boolean = true,
-                 private val postMapHandler: (MemoryMatch) -> StringSearchResult? = {
+                 private val postMapHandler: (MemoryMatch<*>) -> StringSearchResult? = {
                      r ->
                      StringSearchResult(readProgramBytesToUTF8String(program.memory, r), r.address)
                  })
@@ -48,7 +49,7 @@ open class RegexSearcher(protected val program: Program, private val predicate: 
         val searcher = MemorySearcher(byteSource, RegExByteMatcher(predicate.toString(),
             SearchSettings().withSearchFormat(SearchFormat.REG_EX)),
             program.memory.allInitializedAddressSet, REGEX_MAX_SEARCH_COUNT)
-        val results = ListAccumulator<MemoryMatch>()
+        val results = ListAccumulator<MemoryMatch<SearchData>>()
         searcher.findAll(results, api.monitor)
         val resultList = results.asList()
 

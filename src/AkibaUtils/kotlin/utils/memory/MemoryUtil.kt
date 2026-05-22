@@ -131,7 +131,7 @@ class MemoryUtil {
          */
         @JvmStatic
         @Throws(MemoryAccessException::class)
-        fun readProgramBytesToUTF8String(memory: Memory, result: MemoryMatch): String {
+        fun readProgramBytesToUTF8String(memory: Memory, result: MemoryMatch<*>): String {
             return readProgramBytesToUTF8String(memory, result.address, result.length)
         }
 

@@ -20,8 +20,8 @@ import java.util.regex.Pattern
  * @param memory Ghidra 内存对象。
  * @param pattern 用于匹配的正则表达式模式。
  */
-class RegexPattern(private val memory: Memory, private val pattern: Pattern) : Predicate<MemoryMatch> {
-    override fun test(matchTarget: MemoryMatch): Boolean {
+class RegexPattern(private val memory: Memory, private val pattern: Pattern) : Predicate<MemoryMatch<*>> {
+    override fun test(matchTarget: MemoryMatch<*>): Boolean {
         val memContent: String = MemoryUtil.readProgramBytesToUTF8String(memory, matchTarget)
         return pattern.matcher(memContent).matches()
     }
@@ -33,7 +33,7 @@ class RegexPattern(private val memory: Memory, private val pattern: Pattern) : P
      * @param program Ghidra 程序对象。
      * @return 字节匹配器对象。
      */
-    fun toMatcher(program: Program): ByteMatcher {
+    fun toMatcher(program: Program): ByteMatcher<*> {
         return RegExByteMatcher(pattern.toString(), SearchSettings().withSearchFormat(SearchFormat.REG_EX))
     }
 
@@ -59,8 +59,8 @@ class RegexPattern(private val memory: Memory, private val pattern: Pattern) : P
  * @param memory Ghidra 内存对象。
  * @param monitor 任务监视器。
  */
-class DisasmAttemptPattern(private val memory: Memory, private val monitor: TaskMonitor) : Predicate<MemoryMatch> {
-    override fun test(matchTarget: MemoryMatch): Boolean {
+class DisasmAttemptPattern(private val memory: Memory, private val monitor: TaskMonitor) : Predicate<MemoryMatch<*>> {
+    override fun test(matchTarget: MemoryMatch<*>): Boolean {
         // 我们不会使用 matchTarget 中的 size 元素
         val disassembler = Disassembler.getDisassembler(memory.program, monitor, null)
         val targetSet = AddressSet(matchTarget.address)

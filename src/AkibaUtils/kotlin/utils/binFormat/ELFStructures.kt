@@ -13,6 +13,7 @@ import ghidra.features.base.memsearch.bytesource.ProgramByteSource
 import ghidra.features.base.memsearch.format.SearchFormat
 import ghidra.features.base.memsearch.gui.SearchSettings
 import ghidra.features.base.memsearch.matcher.RegExByteMatcher
+import ghidra.features.base.memsearch.matcher.SearchData
 import ghidra.features.base.memsearch.searcher.MemoryMatch
 import ghidra.features.base.memsearch.searcher.MemorySearcher
 import ghidra.program.model.address.Address
@@ -177,7 +178,7 @@ class ELFStructures (
             RegExByteMatcher(
                 target, SearchSettings().withSearchFormat(SearchFormat.BINARY)),
             program.memory.allInitializedAddressSet, REGEX_MAX_SEARCH_COUNT)
-        val results = ListAccumulator<MemoryMatch>()
+        val results = ListAccumulator<MemoryMatch<SearchData>>()
         searcher.findAll(results, TaskMonitor.DUMMY)
         val resultList = results.asList().filter {
             it.address.addressSpace == program.addressFactory.defaultAddressSpace }
