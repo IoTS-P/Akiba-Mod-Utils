@@ -7,7 +7,7 @@ import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.node.TextNode
 import org.iotsplab.akiba.module.server.ServerConfig
 
-class AkibaUtilsConfigDeserializer : JsonDeserializer<AkibaUtilsConfig>() {
+object AkibaUtilsConfigDeserializer : JsonDeserializer<AkibaUtilsConfig>() {
     override fun deserialize(parser: JsonParser, context: DeserializationContext): AkibaUtilsConfig {
         val node = parser.codec.readTree<JsonNode>(parser)
         val modeNode = node.get("mode")
