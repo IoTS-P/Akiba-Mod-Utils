@@ -46,7 +46,7 @@ abstract class AsmOperand(protected var inst: Instruction, protected var opIdx: 
      * @return 描述此操作数的格式化字符串，包含索引和指令地址信息。
      */
     fun toPrettyString(): String {
-        val ret = String.format("Operand #%d for instruction at %s:", opIdx, inst!!.address.toString())
+        val ret = String.format("Operand #%d for instruction at %s:", opIdx, inst.address.toString())
         return ret
     }
 
