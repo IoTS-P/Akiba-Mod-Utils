@@ -22,6 +22,7 @@ class AkibaUtils: AkibaModule() {
      * Uses the duplicate-check logic in DB Daemon (same author → overwrite).
      */
     private fun seedPresetScripts() {
+        val agentDbClient = AgentDatabaseClient(dbClient)
         val knownScripts = listOf(
             "script_library/binary_info.kts",
             "script_library/list_functions.kts",
@@ -53,7 +54,7 @@ class AkibaUtils: AkibaModule() {
                 val meta = parseScriptMeta(source, fileName) ?: continue
 
                 try {
-                    AgentDatabaseClient.createScript(
+                    agentDbClient.createScript(
                         name = meta.name,
                         description = meta.description,
                         author = "Akiba",
