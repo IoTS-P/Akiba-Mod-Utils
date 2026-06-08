@@ -1,8 +1,8 @@
 import java.util.jar.JarInputStream
 
 plugins {
-    kotlin("jvm") version "2.3.20"
-    kotlin("plugin.serialization") version "2.3.20"
+    kotlin("jvm")
+    kotlin("plugin.serialization")
     id("org.jetbrains.dokka") version "2.1.0"
 }
 
