@@ -11,9 +11,11 @@ import java.util.jar.JarFile
 class AkibaUtils: AkibaModule() {
 
     override suspend fun startProcess() {
+        if (scriptSeeded) return
         logger.info("AkibaUtils: Seeding preset scripts into script library...")
         seedPresetScripts()
         logger.info("AkibaUtils: Script library seeding complete.")
+        scriptSeeded = true
     }
 
     /**
@@ -94,4 +96,8 @@ class AkibaUtils: AkibaModule() {
     }
 
     private data class ScriptMeta(val name: String, val description: String)
+
+    companion object {
+        private var scriptSeeded: Boolean = false
+    }
 }
