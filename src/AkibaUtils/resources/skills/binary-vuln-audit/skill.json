@@ -1,0 +1,24 @@
+{
+  "id": "binary-vuln-audit",
+  "name": "Binary Vulnerability Audit",
+  "version": "1.0.0",
+  "description": "Deep Ghidra-based binary vulnerability analysis workflow focused on stack, format-string, and heap bugs with durable function-level annotations.",
+  "entry": "instructions.md",
+  "tags": ["binary", "ghidra", "vulnerability", "reverse-engineering"],
+  "triggers": [
+    "binary vulnerability analysis",
+    "heap overflow",
+    "stack overflow",
+    "format string",
+    "Ghidra audit",
+    "VulnDetector"
+  ],
+  "requiredTools": ["script_library", "query_ghidra_api"],
+  "files": [
+    {"path": "instructions.md", "description": "Main workflow and mandatory function loop"},
+    {"path": "coverage.md", "description": "Coverage strategy and large-binary chunking"},
+    {"path": "function-memory.md", "description": "Function naming, type refinement, and set_get_comment durable notes"},
+    {"path": "vulnerability-checklist.md", "description": "Stack, format-string, and heap vulnerability checklist"},
+    {"path": "report-format.md", "description": "Final report structure"}
+  ]
+}

@@ -40,68 +40,148 @@ class ELFStructures (
      * ELF 文件头。
      * 包含 ELF 文件的基本信息和元数据。
      */
-    val elfHeader: ElfHeader
+    lateinit var elfHeader: ElfHeader
     
     /**
      * ELF 程序头表列表。
      * 描述进程映像的各个段，用于加载和执行。
      */
-    val elfProgramHeaders: List<ElfProgramHeader>
+    lateinit var elfProgramHeaders: List<ElfProgramHeader>
     
     /**
      * ELF 节头表映射。
      * 键为节区名称，值为节头对象，描述各个节区的信息。
      */
-    val elfSectionHeaders: Map<String, ElfSectionHeader>
+    lateinit var elfSectionHeaders: Map<String, ElfSectionHeader>
 
     init {
-        if (!program.memory.blocks.map { it.name }.containsAll(
-            listOf("_elfHeader", "_elfProgramHeaders", "_elfSectionHeaders", ".shstrtab")))
-            throw IllegalArgumentException("Program doesn't contains an ELF file")
+        val blockNames = program.memory.blocks.map { it.name }.toSet()
+        val hasStandardBlocks = blockNames.containsAll(
+            listOf("_elfHeader", "_elfProgramHeaders", "_elfSectionHeaders", ".shstrtab"))
 
-        // 获取 ELF 头
+        if (hasStandardBlocks) {
+            // Primary path: Ghidra imported with the ELF loader, named blocks exist.
+            parseFromStandardBlocks()
+        } else {
+            // Fallback path: ELF binary was imported via a non-ELF loader
+            // (e.g. Raw Binary). Read structures from program memory directly.
+            val base = program.imageBase
+            val magic = ByteArray(4)
+            try { program.memory.getBytes(base, magic) } catch (_: Exception) { }
+            if (!magic.contentEquals(ELF_MAGIC))
+                throw IllegalArgumentException("Program doesn't contain an ELF file")
+
+            parseFromRawMemory(base)
+        }
+    }
+
+    /** Parse ELF structures when Ghidra's ELF-imported named blocks exist. */
+    private fun parseFromStandardBlocks() {
         val hBlock = program.memory.getBlock("_elfHeader")
         val hbContents = ByteArray(hBlock.size.toInt())
         hBlock.getBytes(hBlock.start, hbContents)
         val elfHeaderBp = ByteArrayProvider(hbContents)
         elfHeader = ElfHeader(elfHeaderBp) { err -> logger?.error(err) }
 
-        // 获取 ELF 程序头表
         val phBlock = program.memory.getBlock("_elfProgramHeaders")
         val phbContents = ByteArray(ELF_PROGRAM_HEADER_ENTRY_SIZE)
         val programHeaders = mutableListOf<ElfProgramHeader>()
-
-        (0..<phBlock.size / ELF_PROGRAM_HEADER_ENTRY_SIZE) .forEach { idx ->
+        (0..<phBlock.size / ELF_PROGRAM_HEADER_ENTRY_SIZE).forEach { idx ->
             phBlock.getBytes(phBlock.start.add(idx * ELF_PROGRAM_HEADER_ENTRY_SIZE), phbContents)
-            val elfProgramHeaderBp = ByteArrayProvider(phbContents)
-            val phBinaryReader = BinaryReader(elfProgramHeaderBp, elfHeader.isLittleEndian)
-            programHeaders.add(ElfProgramHeader(phBinaryReader, elfHeader))
+            val bp = ByteArrayProvider(phbContents)
+            val reader = BinaryReader(bp, elfHeader.isLittleEndian)
+            programHeaders.add(ElfProgramHeader(reader, elfHeader))
         }
         elfProgramHeaders = programHeaders
 
-        // 获取 ELF 节头表
         val shBlock = program.memory.getBlock("_elfSectionHeaders")
         val shbContents = ByteArray(ELF_SECTION_HEADER_ENTRY_SIZE)
         val sectionHeaders = mutableListOf<ElfSectionHeader>()
-        val shstrtab = program.memory.getBlock(".shstrtab")
+        val shstrtabBlock = program.memory.getBlock(".shstrtab")
         val shstrtabContents = ByteArray(shBlock.size.toInt())
-        shstrtab.getBytes(shstrtab.start, shstrtabContents)
+        shstrtabBlock.getBytes(shstrtabBlock.start, shstrtabContents)
         val sectionHeaderNames = mutableListOf<String>()
-
-        (0..<shBlock.size / ELF_SECTION_HEADER_ENTRY_SIZE) .forEach { idx ->
+        (0..<shBlock.size / ELF_SECTION_HEADER_ENTRY_SIZE).forEach { idx ->
             shBlock.getBytes(shBlock.start.add(idx * ELF_SECTION_HEADER_ENTRY_SIZE), shbContents)
-            val elfSectionHeaderBp = ByteArrayProvider(shbContents)
-            val shBinaryReader = BinaryReader(elfSectionHeaderBp, elfHeader.isLittleEndian)
-            val sh = ElfSectionHeader(shBinaryReader, elfHeader)
+            val bp = ByteArrayProvider(shbContents)
+            val reader = BinaryReader(bp, elfHeader.isLittleEndian)
+            val sh = ElfSectionHeader(reader, elfHeader)
             sectionHeaders.add(sh)
             sectionHeaderNames.add(
                 if (sh.type == ElfSectionHeaderType.SHT_NULL.value) ""
                 else {
                     val length = (0..<shstrtabContents.size).filter {
-                        shstrtabContents[it] == 0.toByte() && it > sh.name}.min() - sh.name
+                        shstrtabContents[it] == 0.toByte() && it > sh.name
+                    }.min() - sh.name
                     String(shstrtabContents, sh.name, length)
                 }
             )
+        }
+        elfSectionHeaders = sectionHeaderNames.zip(sectionHeaders).toMap()
+    }
+
+    /**
+     * Parse ELF structures directly from program memory.
+     * Used when Ghidra imported the binary without creating the standard
+     * _elfHeader / _elfProgramHeaders / _elfSectionHeaders blocks.
+     *
+     * All file offsets in the ELF header are relative to the program's
+     * image base (which is 0x0 for Raw Binary imports).
+     */
+    private fun parseFromRawMemory(base: ghidra.program.model.address.Address) {
+        // ── Read and parse the ELF header ──────────────────────────────
+        val hdrSize = 64  // e_ident(16) + fixed fields; ElfHeader parser reads exactly this
+        val hdrBytes = ByteArray(hdrSize)
+        program.memory.getBytes(base, hdrBytes)
+        elfHeader = ElfHeader(ByteArrayProvider(hdrBytes)) { err -> logger?.error(err) }
+
+        val isLE = elfHeader.isLittleEndian
+
+        // ── Read program headers ───────────────────────────────────────
+        val phoff = elfHeader.e_phoff()
+        val phentsize = elfHeader.e_phentsize().toInt()
+        val phnum = elfHeader.programHeaderCount
+        val phEntryBytes = ByteArray(phentsize)
+        val programHeaders = mutableListOf<ElfProgramHeader>()
+        for (i in 0 until phnum) {
+            val addr = base.add(phoff + i.toLong() * phentsize)
+            program.memory.getBytes(addr, phEntryBytes)
+            val reader = BinaryReader(ByteArrayProvider(phEntryBytes), isLE)
+            programHeaders.add(ElfProgramHeader(reader, elfHeader))
+        }
+        elfProgramHeaders = programHeaders
+
+        // ── Read section headers ───────────────────────────────────────
+        val shoff = elfHeader.e_shoff()
+        val shentsize = elfHeader.e_shentsize().toInt()
+        val shnum = elfHeader.sectionHeaderCount
+        val shEntryBytes = ByteArray(shentsize)
+        val sectionHeaders = mutableListOf<ElfSectionHeader>()
+        for (i in 0 until shnum) {
+            val addr = base.add(shoff + i.toLong() * shentsize)
+            program.memory.getBytes(addr, shEntryBytes)
+            val reader = BinaryReader(ByteArrayProvider(shEntryBytes), isLE)
+            sectionHeaders.add(ElfSectionHeader(reader, elfHeader))
+        }
+
+        // ── Read .shstrtab to resolve section names ────────────────────
+        val shstrndx = elfHeader.e_shstrndx()
+        val shstrSec = sectionHeaders.getOrNull(shstrndx)
+        val sectionHeaderNames: List<String>
+        if (shstrSec != null) {
+            val shstrSize = shstrSec.size.toInt()
+            val shstrBytes = ByteArray(shstrSize)
+            val shstrAddr = base.add(shstrSec.offset)
+            program.memory.getBytes(shstrAddr, shstrBytes)
+            sectionHeaderNames = sectionHeaders.map { sh ->
+                if (sh.type == ElfSectionHeaderType.SHT_NULL.value || sh.name >= shstrSize) ""
+                else {
+                    val end = (sh.name until shstrSize).first { shstrBytes[it] == 0.toByte() }
+                    String(shstrBytes, sh.name, end - sh.name)
+                }
+            }
+        } else {
+            sectionHeaderNames = sectionHeaders.map { "" }
         }
         elfSectionHeaders = sectionHeaderNames.zip(sectionHeaders).toMap()
     }
@@ -191,6 +271,9 @@ class ELFStructures (
     }
 
     companion object {
+        /** ELF magic bytes: 0x7f 'E' 'L' 'F' */
+        private val ELF_MAGIC = byteArrayOf(0x7f, 0x45, 0x4c, 0x46)
+
         /**
          * ELF 程序头表项大小
          */
