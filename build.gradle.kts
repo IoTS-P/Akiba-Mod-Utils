@@ -67,7 +67,7 @@ val localModules = listOf(
         moduleName = "AkibaUtils",
         mainClassPath = "org.iotsplab.akiba.module.AkibaUtils",
         authors = listOf("Hornos3"),
-        version = "1.1",
+        version = "1.2",
         briefDescription = "Akiba Utils Module"
     )
 )
