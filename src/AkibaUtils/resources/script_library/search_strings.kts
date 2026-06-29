@@ -1,18 +1,15 @@
 // @name: search_strings
 // @author: Akiba
-// @description: Search defined strings by substring (case-insensitive by default) and return their addresses.
-// @parameters: query (string) - Substring to search for inside string values; caseSensitive (boolean, optional) - Match case-sensitively (default: false); exact (boolean, optional) - Require full-string equality instead of substring (default: false); minLength (integer, optional) - Minimum string length to consider (default: 1); limit (integer, optional) - Max results to return (default: 200)
+// @description: Search defined strings by substring (case-insensitive by default) and return their addresses. If query is empty, list all defined strings.
+// @parameters: query (string) - Substring to search for inside string values. Empty string lists all defined strings; caseSensitive (boolean, optional) - Match case-sensitively (default: false); exact (boolean, optional) - Require full-string equality instead of substring (default: false, ignored when query is empty); minLength (integer, optional) - Minimum string length to consider (default: 1); limit (integer, optional) - Max results to return (default: 200)
 
 import org.iotsplab.akiba.script.AkibaScript
 
 class SearchStrings : AkibaScript() {
     override suspend fun execute() {
         val query = scriptArgs["query"] as? String
-            ?: run { appendLine("Error: 'query' parameter is required"); return }
-        if (query.isEmpty()) {
-            appendLine("Error: 'query' must not be empty")
-            return
-        }
+            ?: run { appendLine("Error: 'query' parameter is required (use empty string to list all strings)"); return }
+        val listAll = query.isEmpty()
 
         val caseSensitive = (scriptArgs["caseSensitive"] as? Boolean) ?: false
         val exact = (scriptArgs["exact"] as? Boolean) ?: false
@@ -28,10 +25,14 @@ class SearchStrings : AkibaScript() {
         var scanned = 0
         var truncated = false
 
-        appendLine(
-            "Searching strings for ${if (exact) "exact match" else "substring"} " +
-                "\"${query.take(120)}\" (caseSensitive=$caseSensitive, minLength=$minLength, limit=$limit)"
-        )
+        if (listAll) {
+            appendLine("Listing all defined strings (minLength=$minLength, limit=$limit)")
+        } else {
+            appendLine(
+                "Searching strings for ${if (exact) "exact match" else "substring"} " +
+                    "\"${query.take(120)}\" (caseSensitive=$caseSensitive, minLength=$minLength, limit=$limit)"
+            )
+        }
         appendLine("")
 
         while (iter.hasNext()) {
@@ -41,8 +42,12 @@ class SearchStrings : AkibaScript() {
             if (value.length < minLength) continue
             scanned++
 
-            val haystack = if (caseSensitive) value else value.lowercase()
-            val hit = if (exact) haystack == needle else haystack.contains(needle)
+            val hit = if (listAll) {
+                true
+            } else {
+                val haystack = if (caseSensitive) value else value.lowercase()
+                if (exact) haystack == needle else haystack.contains(needle)
+            }
             if (!hit) continue
 
             if (matched >= limit) {

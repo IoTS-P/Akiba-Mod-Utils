@@ -1,16 +1,20 @@
 // @name: set_get_comment
 // @author: Akiba
-// @description: Add, update, clear, or read comments at a listing address. Supports all five Ghidra comment types (EOL, PRE, POST, PLATE, REPEATABLE) via the new CommentType API. Pass action="read" to inspect comments; pass an empty string to clear the selected comment type.
-// @parameters: address (string) - Hex address where the comment is attached (e.g. "0x401000"); action (string, optional) - "set" or "read" (default: "set"); type (string, optional) - One of "EOL", "PRE", "POST", "PLATE", "REPEATABLE", or "ALL" for read mode (default: "EOL", case-insensitive); comment (string, required for action=set) - Comment text. Empty string clears the existing comment of that type; append (boolean, optional) - If true and a comment of this type already exists, append the new text on a new line instead of replacing (default: false)
+// @description: Add, update, clear, or read comments at a listing address, function, or symbol. Supports all five Ghidra comment types (EOL, PRE, POST, PLATE, REPEATABLE) via the new CommentType API. Pass action="read" to inspect comments; pass an empty string to clear the selected comment type.
+// @parameters: address (string) - Hex address, function name, or symbol where the comment is attached (e.g. "0x401000" or "main"); action (string, optional) - "write" or "read" (default: "write"); type (string, optional) - One of "EOL", "PRE", "POST", "PLATE", "REPEATABLE", or "ALL" for read mode (default: "EOL", case-insensitive); comment (string, required for action=write) - Comment text. Multi-line comments are supported. Empty string clears the existing comment of that type; append (boolean, optional) - If true and a comment of this type already exists, append the new text on a new line instead of replacing (default: false)
 
 import org.iotsplab.akiba.script.AkibaScript
+import ghidra.program.model.listing.Program
 import ghidra.program.model.listing.CommentType
+import ghidra.program.model.listing.Function
+import ghidra.program.model.address.Address
 
 class SetGetComment : AkibaScript() {
     override suspend fun execute() {
-        val addressStr = scriptArgs["address"] as? String
-            ?: run { appendLine("Error: 'address' parameter is required"); return }
-        val action = ((scriptArgs["action"] as? String) ?: "set").lowercase()
+        val targetArg = scriptArgs["address"] ?: scriptArgs["target"]
+            ?: run { appendLine("Error: 'address' parameter is required (hex address, function name, or symbol)"); return }
+        val addressStr = targetArg.toString()
+        val action = ((scriptArgs["action"] as? String) ?: "write").lowercase()
         val typeStr = (scriptArgs["type"] as? String)?.uppercase() ?: "EOL"
         val append = (scriptArgs["append"] as? Boolean) ?: false
 
@@ -33,18 +37,23 @@ class SetGetComment : AkibaScript() {
         }
 
         val program = currentProgram!!
-        val address = try {
-            program.addressFactory.getAddress(addressStr)
-        } catch (_: Exception) { null }
-        if (address == null) {
-            appendLine("Error: cannot parse address '$addressStr'")
+        val resolved = resolveTarget(program, addressStr)
+        if (resolved == null) {
+            appendLine("Error: cannot resolve '$addressStr' to an address, function, or symbol")
             return
         }
+        val address = resolved.first
+        val resolvedFunction = resolved.second
 
         val listing = program.listing
         val codeUnit = listing.getCodeUnitAt(address) ?: listing.getCodeUnitContaining(address)
         if (codeUnit == null) {
             appendLine("Warning: no code unit at $address — comment will still be attached to the address.")
+        }
+
+        appendLine("Resolved target: $addressStr -> $address")
+        if (resolvedFunction != null) {
+            appendLine("Containing function: ${resolvedFunction.name} @ ${resolvedFunction.entryPoint}")
         }
 
         if (action == "read") {
@@ -64,8 +73,8 @@ class SetGetComment : AkibaScript() {
             return
         }
 
-        if (action != "set") {
-            appendLine("Error: invalid action '$action'. Expected 'set' or 'read'.")
+        if (action != "write") {
+            appendLine("Error: invalid action '$action'. Expected 'write' or 'read'.")
             return
         }
         if (commentType == null) {
@@ -74,7 +83,7 @@ class SetGetComment : AkibaScript() {
         }
 
         val comment = scriptArgs["comment"] as? String
-            ?: run { appendLine("Error: 'comment' parameter is required for action=set (use \"\" to clear)"); return }
+            ?: run { appendLine("Error: 'comment' parameter is required for action=write (use \"\" to clear)"); return }
         val existing = listing.getComment(commentType, address)
         val newValue = when {
             comment.isEmpty() -> null  // explicit clear
@@ -100,7 +109,7 @@ class SetGetComment : AkibaScript() {
 
         when {
             newValue == null -> appendLine("Cleared $commentType comment at $address")
-            existing == null -> appendLine("Set $commentType comment at $address")
+            existing == null -> appendLine("Written $commentType comment at $address")
             append -> appendLine("Appended to existing $commentType comment at $address")
             else -> appendLine("Replaced existing $commentType comment at $address")
         }
@@ -112,5 +121,36 @@ class SetGetComment : AkibaScript() {
             appendLine("Current $commentType comment:")
             finalValue.lineSequence().forEach { appendLine("  $it") }
         }
+    }
+
+    private fun resolveTarget(
+        program: Program,
+        target: String
+    ): Pair<Address, Function?>? {
+        val fm = program.functionManager
+        val trimmed = target.trim()
+
+        val funcIter = fm.getFunctions(true)
+        while (funcIter.hasNext()) {
+            val f = funcIter.next()
+            if (f.name.equals(trimmed, ignoreCase = true)) {
+                return f.entryPoint to f
+            }
+        }
+
+        val directAddress = try { program.addressFactory.getAddress(trimmed) } catch (_: Exception) { null }
+        if (directAddress != null) {
+            return directAddress to (fm.getFunctionAt(directAddress) ?: fm.getFunctionContaining(directAddress))
+        }
+
+        val symbols = program.symbolTable.getSymbols(trimmed)
+        while (symbols.hasNext()) {
+            val symbol = symbols.next()
+            val address = symbol.address ?: continue
+            val func = fm.getFunctionAt(address) ?: fm.getFunctionContaining(address)
+            return (func?.entryPoint ?: address) to func
+        }
+
+        return null
     }
 }
