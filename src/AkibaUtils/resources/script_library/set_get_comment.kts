@@ -2,6 +2,7 @@
 // @author: Akiba
 // @description: Add, update, clear, or read comments at a listing address, function, or symbol. Supports all five Ghidra comment types (EOL, PRE, POST, PLATE, REPEATABLE) via the new CommentType API. Pass action="read" to inspect comments; pass an empty string to clear the selected comment type.
 // @parameters: address (string) - Hex address, function name, or symbol where the comment is attached (e.g. "0x401000" or "main"); action (string, optional) - "write" or "read" (default: "write"); type (string, optional) - One of "EOL", "PRE", "POST", "PLATE", "REPEATABLE", or "ALL" for read mode (default: "EOL", case-insensitive); comment (string, required for action=write) - Comment text. Multi-line comments are supported. Empty string clears the existing comment of that type; append (boolean, optional) - If true and a comment of this type already exists, append the new text on a new line instead of replacing (default: false)
+// @dedup: args_only
 
 import org.iotsplab.akiba.script.AkibaScript
 import ghidra.program.model.listing.Program

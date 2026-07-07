@@ -2,6 +2,7 @@
 // @author: Akiba
 // @description: Create, query, update, or delete a structure/union data type in the program's data type manager. action=get returns the existing type's length, alignment, and component list. action=update edits components in place (rename via newName, replace / insert / delete individual components) so iterative refinement does not require delete-then-recreate. action=delete removes the type outright. For complex types built up gradually, prefer create with components, then update with componentEdits between function discoveries.
 // @parameters: name (string) - Data type name; kind (string, optional, for create) - "structure" or "union" (default "structure"); category (string, optional) - Category path, e.g. "/myTypes" (default "/"); action (string, default "create") - One of "create" / "get" / "update" / "delete"; components (string, optional, for create/update) - JSON array of component objects for create (or wholesale replacement on update): [{"name":"field1","type":"int","size":4}, {"name":"field2","type":"char*"}]. 'type' is the type name; 'size' is optional (only for non-pointer types when you want a specific byte length). If 'type' is omitted, the component will use 'undefined' with the given size; newName (string, optional, for update) - Rename the data type; newCategory (string, optional, for update) - Move to a different category; componentEdits (string, optional, for update on existing structures/unions) - JSON array of per-component edits applied in order: [{"index":1,"action":"replace","type":"int","name":"count"},{"index":2,"action":"delete"},{"index":3,"action":"insert","type":"int","name":"extra"}]. Allowed per-element action: replace / delete / insert. After inserts the supplied `index` is the position in the original structure.
+// @dedup: args_only
 
 import org.iotsplab.akiba.script.AkibaScript
 import ghidra.program.model.data.*
@@ -62,7 +63,7 @@ class ManageDataType : AkibaScript() {
         if (resolved == null) { appendLine("Error: failed to resolve data type"); return }
         appendLine("Created $kind '${resolved.name}' in category ${resolved.categoryPath.path}")
         appendLine("Size: ${resolved.length} bytes")
-        printCompositeLayout(resolved)
+        printCompositeLayout(resolved as Composite)
     }
 
     // ── get ────────────────────────────────────────────────────────────────
@@ -114,8 +115,7 @@ class ManageDataType : AkibaScript() {
         // (2) Per-component edits (apply on top of (1) if both given).
         if (componentEditsRaw != null) {
             val edits = try {
-                com.fasterxml.jackson.databind.ObjectMapper().readValue(componentEditsRaw, List::class.java)
-                    .map { (it as? Map<String, Any?>) ?: emptyMap() }
+                com.fasterxml.jackson.databind.ObjectMapper().readValue(componentEditsRaw, List::class.java) as List<Map<String, Any?>>
             } catch (e: Exception) {
                 appendLine("Error: 'componentEdits' is not a valid JSON array: ${e.message}")
                 return

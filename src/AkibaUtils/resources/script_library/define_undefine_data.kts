@@ -2,6 +2,7 @@
 // @author: Akiba
 // @description: Define or undefine data at a given address. To define: provide an address and a data type name. To undefine: set action to "clear". Optionally specify length for dynamic data types.
 // @parameters: address (string) - Hex address in the program; action (string, optional) - "define" or "clear" (default: "define"); type (string, optional) - Data type name, e.g. "int", "DWORD", "PointerType", "undefined" (required for action=define); length (integer, optional) - Override length for dynamic types (default: auto from data type)
+// @dedup: args_only
 
 import org.iotsplab.akiba.script.AkibaScript
 import ghidra.program.model.data.*

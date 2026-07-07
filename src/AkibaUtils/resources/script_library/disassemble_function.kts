@@ -1,7 +1,7 @@
 // @name: disassemble_function
 // @author: Akiba
 // @description: Disassemble instructions from a function, address range, or centered around an address. Supports three modes: (1) legacy — target a function by name/address; (2) range — specify startAddress + endAddress; (3) center — specify address + before + after. By default the output is restricted to a single function body; set force=true to cross function boundaries.
-// @parameters: target (string, optional) - Legacy mode: function name or hex address (e.g. "main" or "0x401000"); startAddress (string, optional) - Range mode: start of disassembly range (hex); endAddress (string, optional) - Range mode: end of disassembly range (hex, inclusive); address (string, optional) - Center mode: the address to center around; before (integer, optional) - Center mode: instructions to show before the center address (default 8); after (integer, optional) - Center mode: instructions to show from/after the center address (default 24); showBytes (boolean, optional) - Include raw instruction bytes column (default: true); showComments (boolean, optional) - Include EOL/pre/post comments (default: true); addressAfter (string, optional) - Resume point: skip instructions at or before this address; force (boolean, optional) - Allow crossing function boundaries (default: false)
+// @parameters: target (string, optional) - Legacy mode: function name or hex address (e.g. "main" or "0x401000"); startAddress (string, optional) - Range mode: start of disassembly range (hex, inclusive); endAddress (string, optional) - Range mode: end of disassembly range (hex, EXCLUSIVE — instructions are emitted for [startAddress, endAddress); endAddress itself is NOT included. Set endAddress to the start of the next symbol so the boundary check cannot trip on the next function's first byte); address (string, optional) - Center mode: the address to center around; before (integer, optional) - Center mode: instructions to show before the center address (default 8); after (integer, optional) - Center mode: instructions to show from/after the center address (default 24); showBytes (boolean, optional) - Include raw instruction bytes column (default: true); showComments (boolean, optional) - Include EOL/pre/post comments (default: true); addressAfter (string, optional) - Resume point: skip instructions at or before this address; force (boolean, optional) - Allow crossing function boundaries (default: false)
 
 import org.iotsplab.akiba.script.AkibaScript
 import ghidra.program.model.address.Address
@@ -33,7 +33,17 @@ class DisassembleFunction : AkibaScript() {
 
         // ── Step 1: Determine mode and compute instruction range ───────────
         val resolved: RangeInfo = when {
-            // Range mode: startAddress + endAddress
+            // Range mode: startAddress + endAddress.
+            //
+            // endAddress is EXCLUSIVE — instructions are emitted for
+            // [startAddress, endAddress) and endAddress itself is not
+            // disassembled. This matches the convention used everywhere
+            // else in the audit pipeline (VulnDetector, VulnSubAgentHarness,
+            // VulnAuditHarnessCore.countProjectOwnedFunctionsInRange) and
+            // — most importantly — keeps the single-function boundary
+            // check from tripping on the next function's first byte when
+            // the LLM happens to pass the start of the next symbol as
+            // endAddress.
             scriptArgs.containsKey("startAddress") || scriptArgs.containsKey("endAddress") -> {
                 val startStr = scriptArgs["startAddress"] as? String
                     ?: run { appendLine("Error: 'startAddress' required in range mode"); return }
@@ -41,14 +51,26 @@ class DisassembleFunction : AkibaScript() {
                     ?: run { appendLine("Error: 'endAddress' required in range mode"); return }
                 val start = parseAddr(startStr, addrFactory) ?: run { return }
                 val end = parseAddr(endStr, addrFactory) ?: run { return }
-                if (end < start) { appendLine("Error: endAddress ($endStr) < startAddress ($startStr)"); return }
+                if (end <= start) {
+                    appendLine("Error: endAddress ($endStr) must be strictly greater than startAddress ($startStr) — " +
+                        "endAddress is exclusive, so the half-open range [startAddress, endAddress) must contain at least one address.")
+                    return
+                }
                 val size = end.subtract(start)
-                if (size < 0 || size > MAX_RANGE_BYTES) {
+                if (size > MAX_RANGE_BYTES) {
                     appendLine("Error: range exceeds safety limit ($MAX_RANGE_BYTES bytes, got ${size} bytes). Narrow the range or use a more specific address.")
                     return
                 }
-                checkBoundary(start, end, fm, force) ?: return
-                RangeInfo(start, end, "range $start - $end")
+                // The boundary check (and the iteration break) work in
+                // inclusive-end coordinates, so step `end` back by one
+                // address. `end > start` was just verified, so
+                // `end.previous()` is always a valid address in the same
+                // space (it can only be undefined when end is the very
+                // first address, which would require start to be before
+                // it and contradict the check above).
+                val inclusiveEnd = end.previous()
+                checkBoundary(start, inclusiveEnd, fm, force) ?: return
+                RangeInfo(start, inclusiveEnd, "range $start - $end (exclusive end)")
             }
 
             // Center mode: address + before + after
@@ -59,12 +81,22 @@ class DisassembleFunction : AkibaScript() {
                 val before = ((scriptArgs["before"] as? Number)?.toInt() ?: 8).coerceAtLeast(0)
                 val after = ((scriptArgs["after"] as? Number)?.toInt() ?: 24).coerceAtLeast(1)
 
+                // Clamp the walk to the containing function's body so a
+                // small function (< before+after instructions) does not
+                // spill into the adjacent function and get rejected by
+                // checkBoundary.  Only when force=true do we allow the
+                // walk to cross function boundaries.
+                val containingFunc = if (!force) fm.getFunctionContaining(center) else null
+                val bodyMin = containingFunc?.body?.minAddress
+                val bodyMax = containingFunc?.body?.maxAddress
+
                 var walk = listing.getInstructionAt(center) ?: listing.getInstructionAfter(center)
                     ?: run { appendLine("Error: no instruction at or after $center"); return }
                 var walkBack = before
                 while (walkBack > 0) {
                     val prev = listing.getInstructionBefore(walk.address)
                     if (prev == null) break
+                    if (bodyMin != null && prev.address.compareTo(bodyMin) < 0) break
                     walk = prev
                     walkBack--
                 }
@@ -76,6 +108,7 @@ class DisassembleFunction : AkibaScript() {
                 while (walkForward > 0) {
                     val next = listing.getInstructionAfter(lastAddr)
                     if (next == null) break
+                    if (bodyMax != null && next.address.compareTo(bodyMax) > 0) break
                     lastAddr = next.address
                     walkForward--
                 }
@@ -102,9 +135,57 @@ class DisassembleFunction : AkibaScript() {
             parseAddr(addressAfterArg, addrFactory) ?: return
         } else null
 
+        // ── Step 2b: Function-level instruction indexing ──────────────────
+        // For single-function ranges (non-force), walk the containing
+        // function's full body once to learn (a) how many instructions
+        // the function has in total and (b) the 1-based position of the
+        // window we are about to emit.  This lets us print a prominent
+        // "showing #X–#Y of N" banner up front — and, when more
+        // instructions remain, a clear addressAfter continuation hint
+        // at the TOP of the output where the LLM sees it first, rather
+        // than buried in the trailing footer.
+        var totalInstrs = 0
+        var firstEmittedIdx = 0
+        var lastEmittedIdx = 0
+        var lastEmittedAddrPre: Address? = null
+        if (!force) {
+            val fn = fm.getFunctionContaining(resolved.rangeStart)
+            if (fn != null) {
+                val fIter = listing.getInstructions(fn.body, true)
+                var idx = 0
+                while (fIter.hasNext()) {
+                    val ins = fIter.next()
+                    idx++
+                    val a = ins.address
+                    if (a.compareTo(resolved.rangeStart) >= 0 &&
+                        a.compareTo(resolved.rangeEnd) <= 0) {
+                        val passes = addressAfter == null || a.compareTo(addressAfter) > 0
+                        if (passes) {
+                            if (firstEmittedIdx == 0) firstEmittedIdx = idx
+                            lastEmittedIdx = idx
+                            lastEmittedAddrPre = a
+                        }
+                    }
+                }
+                totalInstrs = idx
+            }
+        }
+
         // ── Step 3: Emit instructions ──────────────────────────────────────
         appendLine("; Disassembly: ${resolved.label}")
-        if (addressAfter != null) appendLine("; Resuming from instructions strictly after $addressAfter")
+        if (totalInstrs > 0 && firstEmittedIdx > 0) {
+            appendLine("; Function: $totalInstrs instructions total — showing #$firstEmittedIdx to #$lastEmittedIdx of $totalInstrs" +
+                (if (addressAfter != null) " (resuming after $addressAfter)" else ""))
+            val remaining = totalInstrs - lastEmittedIdx
+            if (remaining > 0) {
+                val resumeAddr = lastEmittedAddrPre
+                if (resumeAddr != null) {
+                    appendLine("; >>> $remaining more instructions after this batch — to continue, re-run disassemble_function with addressAfter=$resumeAddr")
+                }
+            }
+        } else if (addressAfter != null) {
+            appendLine("; Resuming from instructions strictly after $addressAfter")
+        }
         appendLine("")
 
         val insnIter = listing.getInstructions(resolved.rangeStart, true)
@@ -158,8 +239,13 @@ class DisassembleFunction : AkibaScript() {
             appendLine("; Total instructions emitted: $count" +
                 if (skippedByFilter > 0) " (skipped $skippedByFilter before addressAfter)" else "")
             if (lastEmittedAddr != null) {
+                // Only suggest resuming when we actually know there are
+                // more instructions in the function (totalInstrs == 0
+                // means unknown, e.g. force mode — be conservative and
+                // still show the hint).
+                val hasMore = totalInstrs == 0 || lastEmittedIdx < totalInstrs
                 appendLine("; Last emitted address: $lastEmittedAddr" +
-                    if (addressAfter == null) "  (pass as 'addressAfter' to resume)" else "")
+                    (if (addressAfter == null && hasMore) "  (pass as 'addressAfter' to resume)" else ""))
             }
         }
     }

@@ -2,6 +2,7 @@
 // @author: Akiba
 // @description: Alter a label (global symbol) at a given address: rename it, retype the data/code unit underneath it, or delete the label. action=set_data_type applies a data type at the label's address (so naming a buffer `packet_buf` and then typing it `uint8_t[256]` is two calls). action=delete removes the user-defined label only — function entry symbols, parameter/local symbols, and default Ghidra labels are never touched.
 // @parameters: target (string) - Current label name OR hex address (e.g. "main" or "0x402000"); action (string, default "rename") - One of "rename" / "set_data_type" / "delete"; newName (string, for action=rename) - New label name (must be a valid Ghidra identifier); type (string, for action=set_data_type) - Data type name to apply at the label's address (e.g. "int", "DWORD", "char", or a user-defined struct); length (integer, optional, for action=set_data_type) - Override byte length for dynamic-length types (default: type's natural length); address (string, optional) - Explicit hex address when `target` is a name that resolves ambiguously
+// @dedup: args_only
 
 import org.iotsplab.akiba.script.AkibaScript
 import ghidra.program.model.data.*

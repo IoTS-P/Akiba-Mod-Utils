@@ -2,6 +2,7 @@
 // @author: Akiba
 // @description: Rename a function and optionally update its return type and parameter types. Specify a function by name or address. Parameter types are set as a JSON array of type name strings.
 // @parameters: target (string) - Function name or hex address (e.g. "main" or "0x401000"); newName (string) - New function name; returnType (string, optional) - New return type name, e.g. "bool" or "int"; paramTypes (string, optional) - JSON array of type names, e.g. ["int","char*","size_t"]
+// @dedup: args_only
 
 import org.iotsplab.akiba.script.AkibaScript
 import ghidra.program.model.symbol.SourceType

@@ -2,6 +2,7 @@
 // @author: Akiba
 // @description: Alter a function's local variable: change its data type or rename it. Local variables are recovered by the Ghidra decompiler; they cannot be removed via this script (use alter_func_signature for parameter/return-type changes, or remove the whole function if needed). Locate a local by name (e.g. "local_4", "iVar1") or by stack offset (e.g. "-0x4"). Supports batch via the `operations` JSON array for renaming/retyping several locals at once.
 // @parameters: target (string) - Function name or hex address (e.g. "main" or "0x401000"); name (string) - Current local variable name (e.g. "local_4", "iVar1") or stack offset (e.g. "-0x4"); action (string, default "set_type") - One of "set_type" / "rename"; type (string, for action=set_type) - Target data type name (e.g. "int", "char*", "DWORD", or a user-defined struct name); newName (string, for action=rename) - New local variable name (must be a valid identifier); operations (string, optional) - JSON array of operation objects for batch: [{"name":"local_4","action":"set_type","type":"int"},{"name":"iVar1","action":"rename","newName":"i"}]. Per-element fields: name, action, optional type, newName.
+// @dedup: args_only
 
 import org.iotsplab.akiba.script.AkibaScript
 import ghidra.program.model.data.*
