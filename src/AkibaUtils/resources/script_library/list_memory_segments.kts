@@ -7,7 +7,7 @@ import org.iotsplab.akiba.script.AkibaScript
 
 class ListMemorySegments : AkibaScript() {
     override suspend fun execute() {
-        val program = currentProgram ?: run { appendLine("Error: no program loaded"); return }
+        val program = this.program ?: run { appendLine("Error: no program loaded"); return }
         val showUninitialized = (scriptArgs["showUninitialized"] as? Boolean) ?: true
         val sortBy = ((scriptArgs["sortBy"] as? String) ?: "address").lowercase()
 

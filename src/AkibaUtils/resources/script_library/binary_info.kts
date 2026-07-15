@@ -7,7 +7,7 @@ import org.iotsplab.akiba.script.AkibaScript
 
 class BinaryInfo : AkibaScript() {
     override suspend fun execute() {
-        val prog = currentProgram!!
+        val prog = program!!
 
         appendLine("=== Binary Information ===")
         appendLine("Name:        ${prog.name}")

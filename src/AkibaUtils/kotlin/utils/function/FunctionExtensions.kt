@@ -19,10 +19,10 @@ import org.iotsplab.akiba.utils.assembly.isGenericJump
 fun Function.allInstructions(): ArrayList<Instruction> {
     val instructions = ArrayList<Instruction>()
     var ptr = entryPoint
-    val currentProgram = program
+    val prog = program
 
     while (ptr < body.maxAddress) {
-        val nextInst = currentProgram.listing.getInstructionAt(ptr) ?: return instructions
+        val nextInst = prog.listing.getInstructionAt(ptr) ?: return instructions
         instructions.add(nextInst)
         ptr = ptr.add(nextInst.length.toLong())
     }

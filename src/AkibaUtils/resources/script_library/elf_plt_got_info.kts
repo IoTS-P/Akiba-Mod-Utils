@@ -10,7 +10,7 @@ import ghidra.app.util.bin.format.elf.ElfProgramHeaderConstants
 
 class ElfPltGotInfo : AkibaScript() {
     override suspend fun execute() {
-        val program = currentProgram ?: run { appendLine("Error: no program loaded"); return }
+        val program = this.program ?: run { appendLine("Error: no program loaded"); return }
         if (!program.executableFormat.contains("ELF", ignoreCase = true)) {
             appendLine("Not an ELF program: executableFormat='${program.executableFormat}'")
             return

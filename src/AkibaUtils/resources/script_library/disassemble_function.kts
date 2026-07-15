@@ -22,7 +22,7 @@ class DisassembleFunction : AkibaScript() {
     )
 
     override suspend fun execute() {
-        val program = currentProgram!!
+        val program = this.program!!
         val listing = program.listing
         val addrFactory = program.addressFactory
         val fm = program.functionManager

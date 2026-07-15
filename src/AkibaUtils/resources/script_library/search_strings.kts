@@ -18,7 +18,7 @@ class SearchStrings : AkibaScript() {
 
         val needle = if (caseSensitive) query else query.lowercase()
 
-        val listing = currentProgram!!.listing
+        val listing = program!!.listing
         val iter = listing.getDefinedData(true)
 
         var matched = 0

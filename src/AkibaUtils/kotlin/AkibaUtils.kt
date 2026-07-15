@@ -2,8 +2,10 @@ package org.iotsplab.akiba.module
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
+import org.apache.logging.log4j.Level
 import org.iotsplab.akiba.data.database.AgentDatabaseClient
 import org.iotsplab.akiba.llm.agent.AgentModule
+import ghidra.program.model.listing.Program
 import org.iotsplab.akiba.utils.WithBundledSkills
 import org.iotsplab.akiba.utils.WithScriptFile
 import org.iotsplab.akiba.llm.agent.akibaAgent
@@ -11,6 +13,8 @@ import org.iotsplab.akiba.llm.memory.persistentChatMemory
 import org.iotsplab.akiba.llm.tool.BuiltInTools
 import org.iotsplab.akiba.managers.ConfigManager
 import org.iotsplab.akiba.utils.DoNotCreateTable
+import org.iotsplab.akiba.utils.WithConfigClass
+import org.iotsplab.akiba.managers.WorkspaceManager
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -47,24 +51,60 @@ import java.time.Duration
         "script_library/disassemble_function.kts",
         "script_library/set_get_comment.kts",
         "script_library/entry_point_context.kts",
-        "script_library/read_memory_region.kts",
+        "script_library/read_memory.kts",
         "script_library/elf_plt_got_info.kts",
         "script_library/list_memory_segments.kts",
-        "script_library/rename_function.kts",
-        "script_library/alter_func_var.kts",
-        "script_library/alter_func_signature.kts",
-        "script_library/alter_label.kts",
+        "script_library/manage_func_signature.kts",
         "script_library/manage_data_type.kts",
         "script_library/define_undefine_data.kts",
+        "script_library/disassemble_and_create_function.kts",
+        "script_library/write_memory.kts",
+        "script_library/search_memory.kts",
     ],
     author = "Akiba",
 )
+@WithConfigClass(TextExportConfig::class)
 @DoNotCreateTable
-class AkibaUtils: AgentModule() {
+class AkibaUtils(
+    configPath: String? = null,
+    defaultConfig: Any? = null,
+    id: Int = -1,
+    program: Program? = null,
+    properties: Map<String, String?>? = null,
+    consoleLogLevel: Level = Level.INFO,
+    fileLogLevel: Level = Level.INFO,
+    tableName: String? = null,
+) : AgentModule(configPath, defaultConfig, id, program, properties ?: mapOf(), consoleLogLevel, fileLogLevel, tableName) {
 
     override fun taskPrompt(): String = ""
 
     override suspend fun startProcess() {
+        // ---- Text-export mode ----
+        // When the module config is a TextExportConfig (provided by the
+        // framework's --export CLI flag via the config file), render
+        // project text to the workspace directory and return.  The
+        // framework collects the workspace contents and zips them.
+        val exportConfig = config as? TextExportConfig
+        if (exportConfig != null) {
+            logger.info("AkibaUtils: entering text-export mode")
+            val projectName = WorkspaceManager.projectName
+            val outputDir = workspaceDir.resolve("export")
+            try {
+                exportProjectText(
+                    project = WorkspaceManager.project,
+                    projectName = projectName,
+                    config = exportConfig,
+                    outputDir = outputDir,
+                    logger = logger,
+                )
+                logger.info("AkibaUtils: text-export complete, output=$outputDir")
+            } catch (e: Exception) {
+                logger.error("AkibaUtils: text-export failed: ${e.message}", e)
+            }
+            return
+        }
+
+        // ---- Normal mode: install bundled scripts and skills ----
         if (scriptSeeded) return
         logger.info("AkibaUtils: Installing bundled scripts and skills via AgentModule helpers...")
         try {
@@ -109,12 +149,55 @@ class AkibaUtils: AgentModule() {
     /**
      * Parse metadata annotations from script source header comments.
      */
-    private fun runManualAgentTurn() {
+    private suspend fun runManualAgentTurn() {
         val start = requestManualAgentStart()
         installBundledSkillsForUser(start.username)
         val agentDbClient = AgentDatabaseClient(dbClient)
         val llmConfig = ConfigManager.llmConf?.takeIf { it.isConfigured }?.toLLMConfig()
             ?: throw IllegalStateException("Manual agent worker requires llm config")
+
+        // Open the program from the project so tools (run_script,
+        // script_library, etc.) have access to the Ghidra Program.
+        // For project-based sessions (no binaryId), the program name
+        // is passed via the manual-agent handshake.  For binary-based
+        // sessions, AkibaModule.program was already set at construction.
+        if (program == null) {
+            val programName = start.programName
+            if (programName != null) {
+                logger.info("AkibaUtils: opening program '$programName' for manual agent turn")
+                try {
+                    program = WorkspaceManager.project.openProgram("/", programName, false)
+                } catch (e: Exception) {
+                    logger.error("AkibaUtils: failed to open program '$programName': ${e.message}", e)
+                }
+            }
+            if (program == null) {
+                // Fallback: auto-open the first program in the project root folder.
+                try {
+                    val project = WorkspaceManager.project
+                    project.projectData.refresh(true)
+                    val firstProgram = project.projectData.rootFolder.files.firstOrNull { f ->
+                        val doc = f.domainObjectClass
+                        doc != null && ghidra.program.model.listing.Program::class.java.isAssignableFrom(doc)
+                    }
+                    if (firstProgram != null) {
+                        logger.info("AkibaUtils: auto-opening first program '${firstProgram.name}'")
+                        program = project.openProgram("/", firstProgram.name, false)
+                    } else {
+                        logger.error("AkibaUtils: no program found in project root folder")
+                    }
+                } catch (e: Exception) {
+                    logger.error("AkibaUtils: failed to auto-open program: ${e.message}", e)
+                }
+            }
+        }
+        if (program == null) {
+            throw IllegalStateException(
+                "AkibaUtils: no Ghidra Program is loaded. Manual agent cannot run scripts " +
+                "without a program. programName from handshake: ${start.programName}"
+            )
+        }
+
         val toolList = BuiltInTools.all(this, agentDbClient, start.username).filter { it.name != "run_shell" }
 
         val agent = akibaAgent {
@@ -179,7 +262,8 @@ class AkibaUtils: AgentModule() {
         val sessionId: String,
         val content: String,
         val systemPrompt: String,
-        val username: String = "akiba"
+        val username: String = "akiba",
+        val programName: String? = null
     )
 
     companion object {

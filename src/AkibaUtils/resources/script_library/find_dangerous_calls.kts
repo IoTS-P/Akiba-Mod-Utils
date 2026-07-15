@@ -14,8 +14,8 @@ class FindDangerousCalls : AkibaScript() {
             "memcpy", "memmove", "realpath"
         )
 
-        val fm = currentProgram!!.functionManager
-        val refMgr = currentProgram!!.referenceManager
+        val fm = program!!.functionManager
+        val refMgr = program!!.referenceManager
         var totalFound = 0
 
         val iter = fm.getFunctions(true)

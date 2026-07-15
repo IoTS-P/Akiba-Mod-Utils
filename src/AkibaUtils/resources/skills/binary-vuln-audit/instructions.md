@@ -31,7 +31,7 @@ Tool invocation rule: `disassemble_function`, `decompile_function`, `set_get_com
    - inspect strings with `search_strings` and then xrefs to specific string addresses;
    - consider imported APIs, memory operations, argument flow, and return values.
 5. Persist semantics before moving on:
-   - if the name is default/generated (`FUN_*`, `sub_*`, unnamed), rename via `rename_function` when evidence permits;
+   - if the name is default/generated (`FUN_*`, `sub_*`, unnamed), rename + fix the signature via `manage_func_signature` when evidence permits; for a non-default name you want to replace, use `manage_func_signature` with `forceRename=true`;
    - refine parameter/local/return types when supported by evidence;
    - for non-trivial project-owned functions, write a `PRE` or `PLATE` function-entry note via `set_get_comment` (it accepts function names, symbols, or addresses and resolves them to canonical addresses);
    - add `EOL` comments at key evidence instructions.

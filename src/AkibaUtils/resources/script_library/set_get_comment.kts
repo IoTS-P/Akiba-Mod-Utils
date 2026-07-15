@@ -37,7 +37,7 @@ class SetGetComment : AkibaScript() {
             }
         }
 
-        val program = currentProgram!!
+        val program = this.program!!
         val resolved = resolveTarget(program, addressStr)
         if (resolved == null) {
             appendLine("Error: cannot resolve '$addressStr' to an address, function, or symbol")

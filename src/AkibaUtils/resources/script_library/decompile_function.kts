@@ -14,7 +14,7 @@ class DecompileFunction : AkibaScript() {
         val target = scriptArgs["target"] as? String
             ?: run { appendLine("Error: 'target' parameter is required"); return }
 
-        val fm = currentProgram!!.functionManager
+        val fm = program!!.functionManager
 
         // Try to find by name first — iterate the FunctionIterator manually to avoid
         // Iterable/Iterator ambiguity when calling .asSequence().
@@ -31,7 +31,7 @@ class DecompileFunction : AkibaScript() {
         if (func == null) {
             // Try as address
             val addr = try {
-                currentProgram!!.addressFactory.getAddress(target)
+                program!!.addressFactory.getAddress(target)
             } catch (_: Exception) { null }
             if (addr != null) {
                 func = fm.getFunctionAt(addr) ?: fm.getFunctionContaining(addr)

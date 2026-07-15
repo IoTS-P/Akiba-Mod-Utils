@@ -12,7 +12,7 @@ import ghidra.program.model.data.DataUtilities.ClearDataMode
 
 class DefineUndefineData : AkibaScript() {
     override suspend fun execute() {
-        val program = currentProgram ?: run { appendLine("Error: no program loaded"); return }
+        val program = this.program ?: run { appendLine("Error: no program loaded"); return }
         val addressStr = scriptArgs["address"] as? String
             ?: run { appendLine("Error: 'address' parameter required"); return }
         val action = (scriptArgs["action"] as? String)?.lowercase() ?: "define"

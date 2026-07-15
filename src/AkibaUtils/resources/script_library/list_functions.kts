@@ -16,7 +16,7 @@ class ListFunctions : AkibaScript() {
     }
 
     override suspend fun execute() {
-        val program = currentProgram!!
+        val program = this.program!!
         val fm = program.functionManager
         val addrFactory = program.addressFactory
 

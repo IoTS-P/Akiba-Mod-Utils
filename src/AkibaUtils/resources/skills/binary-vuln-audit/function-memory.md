@@ -25,8 +25,8 @@ for imports / PLT stubs / runtime helpers / thunks.
 
 ### `calls=` staleness warning
 
-`calls=<callee names>` is best-effort and goes stale after `rename_function` or
-function deletion — the comment lives at the address forever, but the names it
+`calls=<callee names>` is best-effort and goes stale after function renaming or
+deletion — the comment lives at the address forever, but the names it
 references may move or disappear. For LIVE callee info, run `get_xrefs` at audit
 time rather than embedding names in the comment. If you embed names, treat them
 as a snapshot only.
@@ -41,103 +41,76 @@ Add instruction-level evidence comments (EOL, free-form — no AKIBA: format req
 
 If the function name is default/generated (`FUN_*`, `sub_*`, unnamed/thunk-like), try to assign a semantic name after understanding its role.
 
-Use `rename_function`:
+Use `manage_func_signature` — it renames the function AND fixes the parameter names/types and return type in a single C-format signature write:
 
 ```json
-{"action":"run","scriptName":"rename_function","parameters":{"target":"<old-name-or-entry>","newName":"parse_request_header","returnType":"int"}}
+{"action":"run","scriptName":"manage_func_signature","parameters":{"address":"<old-name-or-entry>","signature":"int parse_request_header(char *buf, size_t len)"}}
 ```
 
-Only rename when the evidence is sufficient. If uncertain, write a low-confidence comment and list what remains to verify.
+Read mode prints the current prototype so you can decide what to change:
+
+```json
+{"action":"run","scriptName":"manage_func_signature","parameters":{"address":"<name-or-entry>","action":"read"}}
+```
+
+For a non-default name you want to replace, pass `forceRename=true` (the default) to `manage_func_signature` — it will always rename to match the signature name. Only rename when the evidence is sufficient. If uncertain, write a low-confidence comment and list what remains to verify.
 
 ## Type refinement
 
-There are two complementary scripts:
+The unified signature tool is `manage_func_signature` — given a C-format signature it atomically renames the function, sets the return type, and sets every parameter's name AND data type in ONE call. Use it for all rename + parameter + return-type work. If the C signature references a data type that is not yet declared (custom struct/union/enum/typedef), declare it first with `manage_data_type action=create`, then retry.
 
-- `alter_func_signature` — function-level edits and parameter edits (function name, return type, calling convention, varargs, no-return, inline flags, plus per-parameter set_type / rename / add / remove).
-- `alter_func_var` — local variables only (set_type, rename; no delete because locals are recovered by the Ghidra decompiler and should not be removed manually).
+- `manage_func_signature` — rename + parameter names/types + return type from one C signature string, e.g. `signature="jint parse_header(JNIEnv *ctx, jobject this, jbyteArray buf, jint len)"`. Supports function pointer parameters (e.g. `void register_cb(void (*cb)(int, void*))`). Batch mode via `operations` JSON array applies multiple signature changes atomically.
+- `manage_data_type` — create / get / search / delete custom struct/union/enum/typedef using C-format definitions (e.g. `struct PacketHeader { uint32_t magic; uint16_t len; };`).
 
 ### Parameters (function signature)
 
-Single-parameter retype:
+Retype + rename all parameters in one call (preferred — no per-parameter plumbing):
 
 ```json
-{"action":"run","scriptName":"alter_func_signature","parameters":{"target":"parse_request_header","action":"set_param_type","paramName":"param_1","paramType":"char *"}}
+{"action":"run","scriptName":"manage_func_signature","parameters":{"address":"parse_request_header","signature":"int process(RequestCtx *ctx, uint8_t *buf, size_t len)"}}
 ```
 
-Rename a parameter so it shows up under a semantic name in decompile and in subsequent sub-agent passes:
+Rename a default parameter to `unknown_<n>` when you cannot infer a semantic name — still inside the signature:
 
 ```json
-{"action":"run","scriptName":"alter_func_signature","parameters":{"target":"parse_request_header","action":"rename_param","paramName":"param_2","newParamName":"buf"}}
+{"action":"run","scriptName":"manage_func_signature","parameters":{"address":"parse_request_header","signature":"int process(RequestCtx *ctx, uint8_t *unknown_1, size_t len)"}}
 ```
-
-Batch retype + rename + add — typical after a decompile shows `param_1, param_2, param_3` are actually `(ctx, buf, len)` and you want to insert an extra `len` parameter:
-
-```json
-{"action":"run","scriptName":"alter_func_signature","parameters":{"target":"parse_request_header","operations":"[{\"action\":\"set_param_type\",\"paramOrdinal\":0,\"paramType\":\"RequestCtx *\"},{\"action\":\"set_param_type\",\"paramOrdinal\":1,\"paramType\":\"uint8_t *\"},{\"action\":\"rename_param\",\"paramOrdinal\":1,\"newParamName\":\"buf\"},{\"action\":\"rename_param\",\"paramOrdinal\":2,\"newParamName\":\"len\"}]"}}
-```
-
-Change the return type:
-
-```json
-{"action":"run","scriptName":"alter_func_signature","parameters":{"target":"parse_request_header","action":"set_return_type","returnType":"int"}}
-```
-
-### Locals (function body)
-
-Retype a local:
-
-```json
-{"action":"run","scriptName":"alter_func_var","parameters":{"target":"parse_request_header","name":"local_8","action":"set_type","type":"size_t"}}
-```
-
-Rename a local:
-
-```json
-{"action":"run","scriptName":"alter_func_var","parameters":{"target":"parse_request_header","name":"iVar1","action":"rename","newName":"bytes_consumed"}}
-```
-
-> Variable vs argument: in Ghidra `Parameter` extends `Variable` and has a stable ordinal; locals have none. Locals cannot be deleted (the decompiler regenerates them) — only `set_type` and `rename` are supported on locals, and parameter changes go through `alter_func_signature`.
 
 ## Naming clean-up for symbols and addresses
 
-After you know what a default-named address actually holds, give it a semantic label (or remove the noise label) with `alter_label`:
+After you know what a default-named address actually holds, give it a semantic label with `set_get_comment` (PLATE or PRE comment) describing its role. To apply a Ghidra data type at an address, use `define_undefine_data`:
 
 ```json
-{"action":"run","scriptName":"alter_label","parameters":{"target":"DAT_00402000","action":"rename","newName":"packet_header_buf"}}
+{"action":"run","scriptName":"define_undefine_data","parameters":{"address":"0x00402000","action":"define","type":"int","length":4}}
 ```
 
-If the address has a `DAT_*`/`s_*` name AND a real Ghidra type can be applied (e.g. it's a `uint32_t` length field, or a struct member), chain a `set_data_type` call so the listing shows the typed representation:
+## Compound types: create, query, search, delete
+
+When the decompile reveals a struct/union that recurs across several functions, define it once via `manage_data_type action=create` using a C-format definition:
 
 ```json
-{"action":"run","scriptName":"alter_label","parameters":{"target":"packet_header_buf","action":"set_data_type","type":"uint","length":4}}
-{"action":"run","scriptName":"alter_label","parameters":{"target":"DAT_00402014","action":"delete"}}
+{"action":"run","scriptName":"manage_data_type","parameters":{"action":"create","definition":"struct PacketHeader { uint32_t magic; uint16_t len; uint8_t *payload; };","category":"/protocols"}}
 ```
 
-> `alter_label action=delete` only removes user-defined LABEL symbols. Function-entry labels, parameter / local-variable symbols, default-thunk labels, and external symbols are protected — you will get a clear error rather than a silent mis-deletion.
-
-## Compound types: create, refine, query, delete
-
-When the decompile reveals a struct/union that recurs across several functions, define it once via `manage_data_type action=create`, then refine it incrementally with `action=update` (no need to delete + recreate):
+Query a type by name to inspect its layout:
 
 ```json
-{"action":"run","scriptName":"manage_data_type","parameters":{"name":"PacketHeader","kind":"structure","category":"/protocols","components":"[{\"name\":\"magic\",\"type\":\"uint\",\"size\":4},{\"name\":\"len\",\"type\":\"ushort\",\"size\":2},{\"name\":\"payload\",\"type\":\"uint8_t *\",\"size\":8}]"}}
+{"action":"run","scriptName":"manage_data_type","parameters":{"action":"get","name":"PacketHeader"}}
 ```
 
-After more analysis, swap a single component in place (preserves every other field) — `componentEdits` are applied in reverse-index order so earlier edits don't shift later ones:
+Search for types by name or field name (supports empty query to list all types; user-defined types are shown first):
 
 ```json
-{"action":"run","scriptName":"manage_data_type","parameters":{"name":"PacketHeader","action":"update","componentEdits":"[{\"index\":2,\"action\":\"replace\",\"type\":\"void *\",\"name\":\"payload\"}]"}}
+{"action":"run","scriptName":"manage_data_type","parameters":{"action":"search","query":"Packet","type":"struct","limit":50}}
 ```
 
-Query / rename / move / delete:
+Delete a type:
 
 ```json
-{"action":"run","scriptName":"manage_data_type","parameters":{"name":"PacketHeader","action":"get"}}
-{"action":"run","scriptName":"manage_data_type","parameters":{"name":"PacketHeader","action":"update","newName":"PacketHeader_v1","newCategory":"/protocols/v1"}}
-{"action":"run","scriptName":"manage_data_type","parameters":{"name":"PacketHeader","action":"delete"}}
+{"action":"run","scriptName":"manage_data_type","parameters":{"action":"delete","name":"PacketHeader"}}
 ```
 
-> `manage_data_type` is the unified tool for the previous `create_data_type` workflow plus `get` / `update` (per-component edits, rename, recategorise) / `delete`. Use `action=update componentEdits` rather than delete-then-recreate whenever possible — recreating orphans every reference in the binary and breaks `vuln_memory` lookups by type name.
+> `manage_data_type` supports C-format definitions for struct, union, enum, and typedef. Nested structures and references to other defined or built-in types are supported. To update an existing type, simply re-create it with the same name (REPLACE_HANDLER replaces the old definition).
 
 ## When role is unclear
 

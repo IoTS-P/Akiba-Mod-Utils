@@ -1,4 +1,4 @@
-// @name: read_memory_region
+// @name: read_memory
 // @author: Akiba
 // @description: Read a memory region from the current program and render it as bytes, characters, or integer values.
 // @parameters: address (string) - start address, e.g. "0x401000"; size (integer) - number of bytes to read; format (string, optional) - bytes, ascii, utf8, u8, u16, u32, u64, i8, i16, i32, i64, pointer (default: bytes); endian (string, optional) - little, big, or program (default: program); columns (integer, optional) - bytes per row for byte/char output, default 16; maxItems (integer, optional) - maximum integer items to print, default 256
@@ -6,9 +6,8 @@
 import org.iotsplab.akiba.script.AkibaScript
 import java.nio.charset.Charset
 
-class ReadMemoryRegion : AkibaScript() {
+class ReadMemory : AkibaScript() {
     override suspend fun execute() {
-        val program = currentProgram ?: run { appendLine("Error: no program loaded"); return }
         val startText = scriptArgs["address"] as? String
             ?: run { appendLine("Error: 'address' parameter is required"); return }
         val size = (scriptArgs["size"] as? Number)?.toInt()
@@ -90,7 +89,7 @@ class ReadMemoryRegion : AkibaScript() {
             "u16", "i16" -> 2
             "u32", "i32" -> 4
             "u64", "i64" -> 8
-            "pointer" -> currentProgram!!.defaultPointerSize
+            "pointer" -> program!!.defaultPointerSize
             else -> 1
         }
         val signed = format.startsWith("i")

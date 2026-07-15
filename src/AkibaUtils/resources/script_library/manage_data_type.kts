@@ -10,7 +10,7 @@ import ghidra.util.task.TaskMonitor
 
 class ManageDataType : AkibaScript() {
     override suspend fun execute() {
-        val program = currentProgram ?: run { appendLine("Error: no program loaded"); return }
+        val program = this.program ?: run { appendLine("Error: no program loaded"); return }
         val name = scriptArgs["name"] as? String
             ?: run { appendLine("Error: 'name' parameter required"); return }
         val kind = (scriptArgs["kind"] as? String)?.lowercase() ?: "structure"

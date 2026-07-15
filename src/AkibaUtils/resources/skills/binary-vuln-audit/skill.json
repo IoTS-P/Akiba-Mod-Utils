@@ -17,7 +17,7 @@
   "files": [
     {"path": "instructions.md", "description": "Main workflow and mandatory function loop"},
     {"path": "coverage.md", "description": "Coverage strategy and large-binary chunking"},
-    {"path": "function-memory.md", "description": "Function naming, type refinement, and set_get_comment durable notes"},
+    {"path": "function-memory.md", "description": "Function naming, type refinement via manage_func_signature/manage_data_type, and set_get_comment durable notes"},
     {"path": "vulnerability-checklist.md", "description": "Stack, format-string, and heap vulnerability checklist"},
     {"path": "report-format.md", "description": "Final report structure"}
   ]

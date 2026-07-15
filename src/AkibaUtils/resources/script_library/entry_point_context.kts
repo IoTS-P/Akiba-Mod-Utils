@@ -10,7 +10,7 @@ import org.iotsplab.akiba.utils.binFormat.ELFStructures
 
 class EntryPointContext : AkibaScript() {
     override suspend fun execute() {
-        val program = currentProgram ?: run { appendLine("Error: no program loaded"); return }
+        val program = this.program ?: run { appendLine("Error: no program loaded"); return }
         val listing = program.listing
         val fm = program.functionManager
         val before = ((scriptArgs["before"] as? Number)?.toInt() ?: 8).coerceAtLeast(0)
@@ -71,7 +71,7 @@ class EntryPointContext : AkibaScript() {
     }
 
     private fun collectEntryPoints(): List<Address> {
-        val program = currentProgram!!
+        val program = this.program!!
         val result = mutableListOf<Address>()
         val it = program.symbolTable.getExternalEntryPointIterator()
         while (it.hasNext()) result.add(it.next())

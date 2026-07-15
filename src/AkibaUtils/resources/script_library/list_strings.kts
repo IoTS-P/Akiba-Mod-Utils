@@ -9,7 +9,7 @@ class ListStrings : AkibaScript() {
     override suspend fun execute() {
         val minLength = (scriptArgs["minLength"] as? Number)?.toInt() ?: 4
 
-        val listing = currentProgram!!.listing
+        val listing = program!!.listing
         val iter = listing.getDefinedData(true)
         var count = 0
 

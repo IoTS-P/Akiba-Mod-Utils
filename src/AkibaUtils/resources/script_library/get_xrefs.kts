@@ -12,8 +12,8 @@ class GetXrefs : AkibaScript() {
             ?: run { appendLine("Error: 'target' parameter is required"); return }
         val direction = (scriptArgs["direction"] as? String)?.lowercase() ?: "both"
 
-        val fm = currentProgram!!.functionManager
-        val refMgr = currentProgram!!.referenceManager
+        val fm = program!!.functionManager
+        val refMgr = program!!.referenceManager
 
         // Reject obvious string-literal usage early. xrefs require an unambiguous
         // address or function name; string contents are NOT unique (the same
@@ -55,7 +55,7 @@ class GetXrefs : AkibaScript() {
 
         if (resolvedAddr == null) {
             resolvedAddr = try {
-                currentProgram!!.addressFactory.getAddress(target)
+                program!!.addressFactory.getAddress(target)
             } catch (_: Exception) { null }
         }
 
