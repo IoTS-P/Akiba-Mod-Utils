@@ -60,6 +60,7 @@ import java.time.Duration
         "script_library/disassemble_and_create_function.kts",
         "script_library/write_memory.kts",
         "script_library/search_memory.kts",
+        "script_library/find_data_type_refs.kts",
     ],
     author = "Akiba",
 )

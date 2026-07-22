@@ -1,6 +1,6 @@
 // @name: manage_func_signature
 // @author: Akiba
-// @description: Read or write function signatures using C-format syntax, with full renaming support and batch mode. SINGLE MODE: pass an address and a C-format signature string (e.g. "int parse_header(char *buf, size_t len)") to atomically update the function name, return type, and all parameter names/types in one operation. Function pointer parameters are supported (e.g. "void register_cb(void (*cb)(int, void*))"). BATCH MODE: pass an 'operations' JSON array to apply multiple signature changes atomically in a single transaction — strongly recommended when modifying multiple functions. By default the function is always renamed to match the signature (forceRename=true); set forceRename=false to only rename functions with default names (e.g. FUN_401000). NOTE: if the C signature references a data type (custom struct/union/enum/typedef) that is not yet declared in the program, the write will fail — declare it first with the 'manage_data_type' tool (action=create, passing the C definition), then retry this script.
+// @description: Read or write function signatures using C-format syntax, with full renaming support and batch mode. SINGLE MODE: pass an address and a C-format signature string (e.g. "int parse_header(char *buf, size_t len)") to atomically update the function name, return type, and all parameter names/types in one operation. Function pointer parameters are supported (e.g. "void register_cb(void (*cb)(int, void*))"). BATCH MODE: pass an 'operations' JSON array to apply multiple signature changes atomically in a single transaction — strongly recommended when modifying multiple functions. By default the function is always renamed to match the signature (forceRename=true); set forceRename=false to only rename functions with default names (e.g. FUN_401000). NOTE: if the C signature references a custom struct/union/enum/typedef that is not yet declared in the program, the script will REJECT the write and list the undefined types — declare them first with the 'manage_data_type' tool (action=create, passing the C definition), then retry this script.
 // @parameters: address (string, single mode) - Hex address inside a function (e.g. "0x401000") or function name (e.g. "main"); signature (string, single mode) - C-format function signature, e.g. "int main(int argc, char **argv)". If omitted with action=read, returns the current signature; action (string, optional) - "read" or "write" (auto-detected: "write" if signature provided, "read" otherwise); forceRename (boolean, optional, default true) - If true, always rename the function to match the signature name. If false, only rename functions with default names (RENAME_IF_DEFAULT); operations (string, optional, BATCH MODE) - JSON array of signature operations: [{"address":"0x401000","signature":"int parse_header(char *buf, size_t len)"},{"address":"0x401200","signature":"void process_data(char *data, int count)","forceRename":false}]. Each element: address (string, required), signature (string, required), forceRename (boolean, optional, overrides global setting). When 'operations' is provided, it takes precedence over single-mode parameters.
 // @dedup: args_only
 
@@ -11,8 +11,10 @@ import ghidra.app.cmd.function.ApplyFunctionSignatureCmd
 import ghidra.app.cmd.function.FunctionRenameOption
 import ghidra.program.model.data.DataTypeConflictHandler
 import ghidra.program.model.data.DataType
+import ghidra.program.model.data.Composite
 import ghidra.program.model.data.FunctionDefinitionDataType
 import ghidra.program.model.data.Pointer
+import ghidra.program.model.data.CategoryPath
 import ghidra.program.model.listing.Function
 import ghidra.program.model.symbol.SourceType
 
@@ -208,12 +210,53 @@ class ManageFuncSignature : AkibaScript() {
         // We detect ".conflict" types in the result and fall back to the
         // full C parser (CParser.parse) which handles function pointers
         // natively.
-        val funcDef = parseSignatureWithFallback(program, signatureText)
+        //
+        // Pre-normalize: if the return type is a pointer and the '*' is
+        // adjacent to the function name (e.g. "void*foo(...)" or
+        // "void *foo(...)"), CParserUtils may misparse the '*' as part of
+        // the function name. We insert a space between the '*' and the
+        // function name to prevent this.
+        val normalizedSig = normalizeSignature(signatureText)
+        val funcDef = parseSignatureWithFallback(program, normalizedSig)
         if (funcDef == null) return false
+
+        // Detect and fix the asterisk-in-name issue post-parse as well:
+        // even after normalization, some CParser code paths may still
+        // include the '*' in the function name.
+        if (funcDef.name.startsWith("*")) {
+            val cleanName = funcDef.name.trimStart('*').trim()
+            if (cleanName.isNotEmpty()) {
+                if (scriptArgs["operations"] == null) {
+                    appendLine("Note: corrected function name '${funcDef.name}' -> '$cleanName' (stripped leading '*').")
+                }
+                funcDef.setName(cleanName)
+            }
+        }
 
         if (scriptArgs["operations"] == null) {
             appendLine("Parsed: name=${funcDef.name}, return=${funcDef.returnType.name}, params=${funcDef.arguments.size}")
             appendLine("")
+        }
+
+        // ── Validate: reject auto-created empty struct/union types ────────
+        // CParser silently creates empty StructureDataType / UnionDataType
+        // placeholders for unknown struct/union names in the signature. These
+        // are 0-byte or 0-component types with no fields — applying them would
+        // pollute the DTM with empty stubs. We detect and reject them here,
+        // telling the LLM to declare the type first via manage_data_type.
+        val undefinedTypes = findUndefinedCompositeTypes(program, funcDef)
+        if (undefinedTypes.isNotEmpty()) {
+            val isSingle = scriptArgs["operations"] == null
+            if (isSingle) {
+                appendLine("Error: the signature references ${undefinedTypes.size} data type(s) " +
+                    "that are not defined in the program:")
+                for (name in undefinedTypes) {
+                    appendLine("  - $name (empty struct/union — not yet declared)")
+                }
+                appendLine("")
+                appendLine(UNDEFINED_TYPE_HINT)
+            }
+            return false
         }
 
         // ── Apply the signature ──────────────────────────────────────────
@@ -278,6 +321,116 @@ class ManageFuncSignature : AkibaScript() {
         }
 
         return true
+    }
+
+    // ── Helpers: validate data types ──────────────────────────────────────
+
+    /**
+     * Normalize a C function signature string to prevent CParser from
+     * misinterpreting a pointer-return '*' as part of the function name.
+     *
+     * Problem: "void *foo(...)" — the '*' is adjacent to the function name
+     * (no space between them). CParser may include the '*' in the function
+     * name, producing a function named "*foo" instead of "foo".
+     *
+     * Fix: insert a space between the '*' and the function name:
+     *   "void *foo(...)"  → "void * foo(...)"
+     *   "void **foo(...)" → "void ** foo(...)"
+     *   "void * foo(...)" → no change (already separated)
+     *
+     * We only target the return-type position (before the first '('),
+     * and skip function pointer parameters like "void (*cb)(...)" where
+     * the '*' is preceded by '('.
+     */
+    private fun normalizeSignature(signatureText: String): String {
+        val s = signatureText.trim()
+        val firstParen = s.indexOf('(')
+        if (firstParen < 0) return s
+        val beforeParen = s.substring(0, firstParen)
+
+        // Match: one or more '*' immediately followed by an identifier char
+        // (letter or underscore), where the '*' is NOT preceded by '('.
+        // This catches "void *foo" but not "void * foo" (already separated)
+        // and not "(*cb)" (preceded by '(').
+        val pattern = Regex("""(?<!\()\*+(\w)""")
+        val match = pattern.find(beforeParen)
+        if (match == null) return s
+
+        val fixedBefore = pattern.replace(beforeParen) { m ->
+            val stars = m.groupValues[0].takeWhile { it == '*' }
+            val identChar = m.groupValues[1]
+            "$stars $identChar"
+        }
+        val fixed = fixedBefore + s.substring(firstParen)
+
+        if (fixed != s && scriptArgs["operations"] == null) {
+            appendLine("Note: normalized signature '$s' -> '$fixed' (separated '*' from function name).")
+        }
+        return fixed
+    }
+
+    /**
+     * Check all argument and return types in the parsed function definition
+     * for composite (struct/union) types that are empty (0 components).
+     *
+     * CParser auto-creates empty StructureDataType placeholders for unknown
+     * struct/union names. These have 0 components and are NOT pre-existing
+     * user-defined types. We detect them by:
+     *   1. The type is a Composite (Structure or Union)
+     *   2. It has 0 components (empty body)
+     *   3. It was NOT in the DTM before parsing (we check category path —
+     *      auto-created types land in ROOT with no prior definition)
+     *
+     * Returns the set of undefined type names found, or empty set if all
+     * types are properly defined.
+     */
+    private fun findUndefinedCompositeTypes(
+        program: ghidra.program.model.listing.Program,
+        funcDef: FunctionDefinitionDataType
+    ): Set<String> {
+        val undefined = mutableSetOf<String>()
+
+        // Check return type
+        checkForEmptyComposite(funcDef.returnType, undefined)
+
+        // Check all argument types
+        for (arg in funcDef.arguments) {
+            checkForEmptyComposite(arg.dataType, undefined)
+        }
+
+        return undefined
+    }
+
+    /**
+     * Recursively check a DataType for empty composites.
+     * Drills into pointers and typedefs to find the base type.
+     */
+    private fun checkForEmptyComposite(dt: DataType, undefined: MutableSet<String>) {
+        when (dt) {
+            is Composite -> {
+                // An empty composite (0 components) is a placeholder created
+                // by CParser for an unknown struct/union name. Real user-defined
+                // types always have at least 1 component (or are intentionally
+                // empty but that's extremely rare — we treat it as undefined).
+                if (dt.numComponents == 0) {
+                    undefined.add(dt.name)
+                }
+            }
+            is Pointer -> {
+                // Check the pointed-to type (e.g. MyStruct * → check MyStruct)
+                val base = dt.dataType
+                if (base != null) {
+                    checkForEmptyComposite(base, undefined)
+                }
+            }
+            is ghidra.program.model.data.TypeDef -> {
+                // Check the underlying type
+                checkForEmptyComposite(dt.dataType, undefined)
+            }
+            is ghidra.program.model.data.Array -> {
+                checkForEmptyComposite(dt.dataType, undefined)
+            }
+        }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────

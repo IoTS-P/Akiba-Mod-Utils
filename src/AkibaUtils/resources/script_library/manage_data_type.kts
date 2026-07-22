@@ -1,42 +1,64 @@
 // @name: manage_data_type
 // @author: Akiba
-// @description: Create, query, update, or delete a structure/union data type in the program's data type manager. action=get returns the existing type's length, alignment, and component list. action=update edits components in place (rename via newName, replace / insert / delete individual components) so iterative refinement does not require delete-then-recreate. action=delete removes the type outright. For complex types built up gradually, prefer create with components, then update with componentEdits between function discoveries.
-// @parameters: name (string) - Data type name; kind (string, optional, for create) - "structure" or "union" (default "structure"); category (string, optional) - Category path, e.g. "/myTypes" (default "/"); action (string, default "create") - One of "create" / "get" / "update" / "delete"; components (string, optional, for create/update) - JSON array of component objects for create (or wholesale replacement on update): [{"name":"field1","type":"int","size":4}, {"name":"field2","type":"char*"}]. 'type' is the type name; 'size' is optional (only for non-pointer types when you want a specific byte length). If 'type' is omitted, the component will use 'undefined' with the given size; newName (string, optional, for update) - Rename the data type; newCategory (string, optional, for update) - Move to a different category; componentEdits (string, optional, for update on existing structures/unions) - JSON array of per-component edits applied in order: [{"index":1,"action":"replace","type":"int","name":"count"},{"index":2,"action":"delete"},{"index":3,"action":"insert","type":"int","name":"extra"}]. Allowed per-element action: replace / delete / insert. After inserts the supplied `index` is the position in the original structure.
+// @description: Create, query, search, edit, or delete data types using C-format definitions. Create mode: pass a C definition string (struct, union, enum, typedef) and Ghidra's CParser will parse it into the program's data type manager — no need to manually specify components as JSON. Edit mode: pass a 'name' (existing type) and a 'definition' (new C definition with the SAME name) to replace the type IN-PLACE — all functions/variables that reference the old type are automatically updated to the new layout, so no references are lost (unlike delete+create which orphans every reference). Get mode: pass a name to inspect an existing type's size, alignment, and component layout. Search mode: pass a 'query' string to find data types by type name OR by field name (case-insensitive substring match on composites); filter by kind with 'type' (struct/union/enum/typedef/composite/all). Search results are split into two sections — user-defined types created in this program (by the LLM or user) are shown FIRST, while built-in / architecture-provided types that also match are listed AFTER. Delete mode: remove a type by name. The C definition syntax supports nested structs, unions, enums, pointers, arrays, and references to other defined or built-in types.
+// @parameters: action (string, default "create") - One of "create" / "edit" / "get" / "search" / "delete"; definition (string, for action=create/edit) - C definition string, e.g. "struct packet_hdr { uint8_t magic; uint16_t length; uint32_t flags; char payload[256]; };" or "union value { int i; float f; char *s; };" or "enum color { RED, GREEN, BLUE };" or "typedef unsigned int uint;"; name (string, for action=edit/get/delete) - Data type name to edit/look up/delete; query (string, for action=search, optional) - Search term matched against type names and composite field names (case-insensitive substring); if empty or omitted, all types matching the 'type' filter are listed; type (string, optional, for action=search) - Filter by data type kind: "all" (default), "struct"/"structure", "union", "enum", "typedef", "composite" (struct+union); limit (int, optional, for action=search, default 50, max 500) - Maximum number of results to return; category (string, optional) - Category path for the data type, e.g. "/myTypes" (default: resolved from the C definition or root "/")
 // @dedup: args_only
 
 import org.iotsplab.akiba.script.AkibaScript
+import ghidra.app.util.cparser.C.CParser
+import ghidra.app.util.cparser.C.ParseException
 import ghidra.program.model.data.*
 import ghidra.util.task.TaskMonitor
 
 class ManageDataType : AkibaScript() {
+
+    /** A single search result hit. */
+    private data class SearchHit(
+        val dt: DataType,
+        val isUserDefined: Boolean,
+        val nameMatched: Boolean,
+        val matchedFields: List<String>
+    )
+
     override suspend fun execute() {
         val program = this.program ?: run { appendLine("Error: no program loaded"); return }
-        val name = scriptArgs["name"] as? String
-            ?: run { appendLine("Error: 'name' parameter required"); return }
-        val kind = (scriptArgs["kind"] as? String)?.lowercase() ?: "structure"
-        val categoryStr = (scriptArgs["category"] as? String) ?: "/"
         val action = (scriptArgs["action"] as? String)?.lowercase() ?: "create"
-        val newName = scriptArgs["newName"] as? String
-        val newCategoryStr = (scriptArgs["newCategory"] as? String)
-        val componentsRaw = (scriptArgs["components"] as? String)?.takeIf { it.isNotBlank() }
-        val componentEditsRaw = (scriptArgs["componentEdits"] as? String)?.takeIf { it.isNotBlank() }
 
         val dtm = program.dataTypeManager
-        val catPath = CategoryPath(categoryStr)
-        if (!dtm.containsCategory(catPath) && action != "create") {
-            appendLine("Error: category '$categoryStr' does not exist (use 'create' to make a fresh structure in it)")
-            return
-        }
 
-        val txId = program.startTransaction("manage_data_type (action=$action, name=$name)")
+        val txId = program.startTransaction("manage_data_type (action=$action)")
         var committed = false
         try {
             when (action) {
-                "create" -> doCreate(dtm, catPath, name, kind, componentsRaw)
-                "get" -> doGet(dtm, catPath, name)
-                "update" -> doUpdate(dtm, catPath, name, newName, newCategoryStr, componentsRaw, componentEditsRaw)
-                "delete" -> doDelete(dtm, catPath, name)
-                else -> appendLine("Error: unknown action '$action' (expected create / get / update / delete)")
+                "create" -> {
+                    val definition = scriptArgs["definition"] as? String
+                        ?: run { appendLine("Error: 'definition' parameter required for action=create"); return }
+                    doCreate(dtm, definition)
+                }
+                "edit" -> {
+                    val name = scriptArgs["name"] as? String
+                        ?: run { appendLine("Error: 'name' parameter required for action=edit"); return }
+                    val definition = scriptArgs["definition"] as? String
+                        ?: run { appendLine("Error: 'definition' parameter required for action=edit"); return }
+                    doEdit(dtm, name, definition)
+                }
+                "get" -> {
+                    val name = scriptArgs["name"] as? String
+                        ?: run { appendLine("Error: 'name' parameter required for action=get"); return }
+                    doGet(dtm, name)
+                }
+                "search" -> {
+                    val query = (scriptArgs["query"] as? String) ?: scriptArgs["keyword"] as? String ?: ""
+                    val typeFilter = (scriptArgs["type"] as? String)?.lowercase() ?: "all"
+                    val limit = ((scriptArgs["limit"] as? Number)?.toInt() ?: 50).coerceIn(1, 500)
+                    doSearch(dtm, query, typeFilter, limit)
+                }
+                "delete" -> {
+                    val name = scriptArgs["name"] as? String
+                        ?: run { appendLine("Error: 'name' parameter required for action=delete"); return }
+                    doDelete(dtm, name)
+                }
+                else -> appendLine("Error: unknown action '$action' (expected create / edit / get / search / delete)")
             }
             committed = true
         } catch (e: Exception) {
@@ -46,240 +68,392 @@ class ManageDataType : AkibaScript() {
         }
     }
 
-    // ── create ─────────────────────────────────────────────────────────────
+    // ── create: parse C definition and store into DTM ─────────────────────
 
-    @Suppress("UNCHECKED_CAST")
-    private fun doCreate(dtm: DataTypeManager, catPath: CategoryPath, name: String, kind: String, componentsRaw: String?) {
-        // Reject duplicates up-front so the caller gets a clear error rather
-        // than a silently-renamed conflicting type.
-        if (dtm.getDataType(catPath, name) != null) {
-            appendLine("Error: data type '$name' already exists in '$catPath' — use action=update to modify it")
-            return
+    private fun doCreate(dtm: DataTypeManager, definition: String) {
+        appendLine("=== Create Data Type ===")
+        appendLine("Definition: $definition")
+        appendLine("")
+
+        // CParser(dtm, true, null):
+        //   storeDataType=true — the parser stores each parsed type directly
+        //   into the DTM as it encounters definitions, ensuring that
+        //   components (fields, nested types) are fully persisted with proper
+        //   DTM-backed references. This is the critical difference from
+        //   CParser(dtm) (storeDataType=false), which only builds in-memory
+        //   temporary types whose components are NOT preserved after resolve().
+        val parsedTypes = parseAndStore(dtm, definition)
+        if (parsedTypes.isEmpty()) return
+
+        appendLine("Created ${parsedTypes.size} data type(s):")
+        for (dt in parsedTypes) {
+            appendLine("")
+            printDataTypeSummary(dt)
         }
-        val composite: Composite = if (kind == "union") UnionDataType(catPath, name)
-        else StructureDataType(name, 1)
-        componentsRaw?.let { addComponents(composite, it) }
-        val resolved = dtm.resolve(composite, null)
-        if (resolved == null) { appendLine("Error: failed to resolve data type"); return }
-        appendLine("Created $kind '${resolved.name}' in category ${resolved.categoryPath.path}")
-        appendLine("Size: ${resolved.length} bytes")
-        printCompositeLayout(resolved as Composite)
+
+        appendLine("")
+        appendLine("Data type(s) are now available for use in function signatures")
+        appendLine("and data definitions (e.g. via manage_func_signature or define_undefine_data).")
     }
 
-    // ── get ────────────────────────────────────────────────────────────────
+    // ── edit: replace an existing type IN-PLACE, preserving all references ─
 
-    private fun doGet(dtm: DataTypeManager, catPath: CategoryPath, name: String) {
-        val dt = dtm.getDataType(catPath, name)
-        if (dt == null) { appendLine("Error: data type '$name' not found in '$catPath'"); return }
-        appendLine("Data type: ${dt.name}")
-        appendLine("  Category: ${dt.categoryPath.path}")
-        appendLine("  Length:   ${dt.length} bytes")
-        appendLine("  Alignment:${dt.alignment} bytes")
-        if (dt.description.isNotBlank()) appendLine("  Description: ${dt.description}")
-        if (dt is Composite) printCompositeLayout(dt)
-    }
+    private fun doEdit(dtm: DataTypeManager, name: String, definition: String) {
+        appendLine("=== Edit Data Type ===")
+        appendLine("Name: $name")
+        appendLine("New definition: $definition")
+        appendLine("")
 
-    // ── update ─────────────────────────────────────────────────────────────
-
-    @Suppress("UNCHECKED_CAST")
-    private fun doUpdate(
-        dtm: DataTypeManager,
-        catPath: CategoryPath,
-        name: String,
-        newName: String?,
-        newCategoryStr: String?,
-        componentsRaw: String?,
-        componentEditsRaw: String?,
-    ) {
-        val existing = dtm.getDataType(catPath, name)
-        if (existing == null) { appendLine("Error: data type '$name' not found in '$catPath'"); return }
-
-        // We only support update on Composite (Structure / Union). Other
-        // built-ins (typedefs, enums, pointers) need a different code path.
-        val composite = existing as? Composite
-        if (composite == null) {
-            appendLine("Error: action=update only supports structure / union (got ${existing.displayName})")
+        // 1. Find the existing type.
+        val existing = findDataTypeByName(dtm, name)
+        if (existing == null) {
+            appendLine("Error: data type '$name' not found — use action=create to create it first.")
             return
         }
 
-        // (1) Wholesale replacement: components JSON provided.
-        if (componentsRaw != null) {
-            // Clear all current components first.
-            while (composite.numComponents > 0) {
-                try { composite.delete(0) } catch (_: Exception) { break }
-            }
-            addComponents(composite, componentsRaw)
-            appendLine("Replaced all components of '${existing.name}' with the new component list.")
+        appendLine("Existing type:")
+        appendLine("  Name: ${existing.name}")
+        appendLine("  Category: ${existing.categoryPath.path}")
+        appendLine("  Length: ${existing.length} bytes")
+        appendLine("")
+
+        // 2. Parse with storeDataType=true so components are fully materialized
+        //    in the DTM. The parser will create new types; we then use
+        //    replaceDataType to swap the old type for the new one, preserving
+        //    all references.
+        val parsedTypes = parseAndStore(dtm, definition)
+        if (parsedTypes.isEmpty()) return
+
+        // The type we want to replace with is the one matching the name from
+        // the C definition (or the first parsed type if names don't match).
+        val replacementName = parsedTypes[0].name
+        val replacement = parsedTypes.find { it.name == replacementName } ?: parsedTypes[0]
+
+        if (replacement.name != existing.name) {
+            appendLine("Warning: the C definition declares type '${replacement.name}' but you passed name='$name'.")
+            appendLine("  The replacement will use the name from the C definition ('${replacement.name}').")
+            appendLine("  All references to '$name' will be updated to '${replacement.name}'.")
+            appendLine("")
         }
 
-        // (2) Per-component edits (apply on top of (1) if both given).
-        if (componentEditsRaw != null) {
-            val edits = try {
-                com.fasterxml.jackson.databind.ObjectMapper().readValue(componentEditsRaw, List::class.java) as List<Map<String, Any?>>
-            } catch (e: Exception) {
-                appendLine("Error: 'componentEdits' is not a valid JSON array: ${e.message}")
-                return
-            }
-            // Process edits in REVERSE index order so earlier deletions/inserts
-            // do not shift the indices of later edits.
-            val sorted = edits
-                .mapIndexed { idx, e -> Triple(idx, (e["index"] as? Number)?.toInt() ?: -1, e) }
-                .filter { it.second >= 0 }
-                .sortedByDescending { it.second }
-            var okCount = 0
-            for ((rawIdx, idx, edit) in sorted) {
-                val act = (edit["action"] as? String)?.lowercase() ?: ""
-                when (act) {
-                    "delete" -> {
-                        if (idx >= composite.numComponents) {
-                            appendLine("[#$rawIdx] delete: index $idx out of range (have ${composite.numComponents} components)")
-                            continue
-                        }
-                        val nm = composite.getComponent(idx)?.fieldName ?: ""
-                        composite.delete(idx)
-                        appendLine("[#$rawIdx] delete: removed component at index $idx (was '$nm')")
-                        okCount++
-                    }
-                    "replace" -> {
-                        if (idx >= composite.numComponents) {
-                            appendLine("[#$rawIdx] replace: index $idx out of range (have ${composite.numComponents} components)")
-                            continue
-                        }
-                        val newTypeName = edit["type"] as? String
-                        val newCompName = edit["name"] as? String
-                        val size = (edit["size"] as? Number)?.toInt() ?: -1
-                        if (newTypeName == null) {
-                            appendLine("[#$rawIdx] replace: missing 'type'")
-                            continue
-                        }
-                        val dt = resolveDataType(composite.dataTypeManager, newTypeName)
-                        if (dt == null) {
-                            appendLine("[#$rawIdx] replace: type '$newTypeName' not found")
-                            continue
-                        }
-                        val actualSize = if (size > 0 && dt.isZeroLength) size else dt.length
-                        if (composite is StructureDataType) {
-                            composite.replaceAtOffset(idx, dt, actualSize, newCompName, null)
-                        } else {
-                            // UnionDataType: replace has no offset semantics.
-                            // Drop the slot then add a fresh one in its place.
-                            composite.delete(idx)
-                            (composite as UnionDataType).add(dt, newCompName, null)
-                        }
-                        appendLine("[#$rawIdx] replace: index $idx -> ${dt.name}${if (newCompName != null) " '$newCompName'" else ""}")
-                        okCount++
-                    }
-                    "insert" -> {
-                        val newTypeName = edit["type"] as? String
-                        val newCompName = edit["name"] as? String
-                        val size = (edit["size"] as? Number)?.toInt() ?: -1
-                        if (newTypeName == null) {
-                            appendLine("[#$rawIdx] insert: missing 'type'")
-                            continue
-                        }
-                        val dt = resolveDataType(composite.dataTypeManager, newTypeName)
-                        if (dt == null) {
-                            appendLine("[#$rawIdx] insert: type '$newTypeName' not found")
-                            continue
-                        }
-                        val actualSize = if (size > 0 && dt.isZeroLength) size else dt.length
-                        val insertIdx = idx.coerceIn(0, composite.numComponents)
-                        if (composite is StructureDataType) {
-                            composite.insert(insertIdx, dt, actualSize, newCompName, null)
-                        } else {
-                            (composite as UnionDataType).add(dt, newCompName, null)
-                        }
-                        appendLine("[#$rawIdx] insert: ${dt.name} at index $insertIdx${if (newCompName != null) " '$newCompName'" else ""}")
-                        okCount++
-                    }
-                    else -> appendLine("[#$rawIdx] unknown action '$act' (expected replace / delete / insert)")
-                }
-            }
-            appendLine("Component edits: ${sorted.size} requested, $okCount applied.")
+        // 3. Replace the existing type IN-PLACE.
+        // DataTypeManager.replaceDataType updates ALL instances and references
+        // (function parameters, local variables, other structs that embed this
+        // type, etc.) to use the replacement — no orphans, no fallbacks.
+        val resolved = try {
+            dtm.replaceDataType(existing, replacement, true)
+        } catch (e: DataTypeDependencyException) {
+            appendLine("Error: cannot replace '$name' — the new definition depends on the existing type.")
+            appendLine("  This happens when the new struct/union contains a field whose type is")
+            appendLine("  the type being replaced (directly or transitively).")
+            appendLine("  Restructure the definition to avoid the circular dependency.")
+            return
+        } catch (e: IllegalArgumentException) {
+            appendLine("Error: invalid replacement: ${e.message}")
+            appendLine("  Both types must be fixed-length. Dynamic/factory types cannot be replaced.")
+            return
         }
 
-        // (3) Rename / recategorise, last so the rename reflects any structural changes.
-        if (newName != null || newCategoryStr != null) {
-            val targetCat = if (newCategoryStr != null) CategoryPath(newCategoryStr) else composite.categoryPath
-            composite.setNameAndCategory(targetCat, newName ?: composite.name)
-            appendLine("Renamed/moved data type to '${composite.name}' in ${composite.categoryPath.path}")
+        if (resolved == null) {
+            appendLine("Error: dtm.replaceDataType returned null — the replacement failed silently.")
+            return
         }
 
-        // (4) Re-resolve so the manager gives us the canonical unique name
-        // (the manager may have appended a suffix on rename conflicts).
-        val resolved = dtm.resolve(composite, null)
-        if (resolved != null) {
-            appendLine("Final state:")
-            appendLine("  Name:     ${resolved.name}")
-            appendLine("  Category: ${resolved.categoryPath.path}")
-            appendLine("  Length:   ${resolved.length} bytes")
-            printCompositeLayout(resolved as Composite)
+        appendLine("Replaced data type IN-PLACE — all references updated automatically.")
+        appendLine("")
+        printDataTypeSummary(resolved)
+
+        // Report how many other types reference this one (for awareness).
+        val refCount = dtm.getDataTypesContaining(resolved).size
+        if (refCount > 0) {
+            appendLine("")
+            appendLine("Referenced by $refCount other data type(s) — all updated automatically.")
         }
     }
 
-    // ── delete ─────────────────────────────────────────────────────────────
+    // ── get: look up and display a data type ──────────────────────────────
 
-    private fun doDelete(dtm: DataTypeManager, catPath: CategoryPath, name: String) {
-        val dt = dtm.getDataType(catPath, name)
-        if (dt == null) { appendLine("Error: data type '$name' not found in '$catPath'"); return }
+    private fun doGet(dtm: DataTypeManager, name: String) {
+        val dt = findDataTypeByName(dtm, name)
+        if (dt == null) {
+            appendLine("Error: data type '$name' not found")
+            appendLine("  Use action=create with a C definition to create it.")
+            return
+        }
+
+        appendLine("=== Data Type Info ===")
+        printDataTypeSummary(dt)
+    }
+
+    // ── delete: remove a data type ────────────────────────────────────────
+
+    private fun doDelete(dtm: DataTypeManager, name: String) {
+        val dt = findDataTypeByName(dtm, name)
+        if (dt == null) {
+            appendLine("Error: data type '$name' not found")
+            return
+        }
+
         val affectedCount = dtm.getDataTypesContaining(dt).size
         if (affectedCount > 0) {
-            appendLine("Warning: '$name' is referenced by $affectedCount other type(s) — they will fall back to their next-best match after removal.")
+            appendLine("Warning: '$name' is referenced by $affectedCount other type(s).")
+            appendLine("  They will fall back to their next-best match after removal.")
         }
+
         dtm.remove(dt, TaskMonitor.DUMMY)
-        appendLine("Deleted data type '$name' from '$catPath'")
+        appendLine("Deleted data type '${dt.name}' from '${dt.categoryPath.path}'")
     }
 
-    // ── shared layout printer ──────────────────────────────────────────────
+    // ── search: find data types by name or field name ────────────────────
 
-    private fun printCompositeLayout(c: Composite) {
-        if (c !is StructureDataType) {
-            appendLine("Kind: union (${c.numComponents} member(s))")
-            for (i in 0 until c.numComponents) {
-                val comp = c.getComponent(i) ?: continue
-                appendLine("  [$i] ${comp.fieldName ?: "<unnamed>"}: ${comp.dataType.name}")
+    private fun doSearch(dtm: DataTypeManager, query: String, typeFilter: String, limit: Int) {
+        val q = query.lowercase()
+        val queryIsBlank = q.isBlank()
+
+        val knownFilters = setOf("", "all", "struct", "structure", "union", "enum", "typedef", "composite")
+        if (typeFilter !in knownFilters) {
+            appendLine("Warning: unknown type filter '$typeFilter' — searching all types. " +
+                "Valid filters: all, struct, union, enum, typedef, composite.")
+        }
+
+        appendLine("=== Search Data Types ===")
+        appendLine("Query: ${if (queryIsBlank) "(empty — listing all)" else "\"$query\""}  " +
+            "(type filter: ${if (typeFilter.isBlank()) "all" else typeFilter}, limit: $limit)")
+        appendLine("")
+
+        val localArchive = dtm.localSourceArchive
+        val localArchiveId = localArchive?.sourceArchiveID
+
+        val hits = mutableListOf<SearchHit>()
+        val iter = dtm.allDataTypes
+        while (iter.hasNext()) {
+            val dt = iter.next()
+
+            if (!matchesTypeFilter(dt, typeFilter)) continue
+
+            val nameMatched = if (queryIsBlank) false else dt.name.lowercase().contains(q)
+
+            val matchedFields = mutableListOf<String>()
+            if (!queryIsBlank && dt is Composite) {
+                for (i in 0 until dt.numComponents) {
+                    val comp = dt.getComponent(i) ?: continue
+                    val fn = comp.fieldName ?: continue
+                    if (fn.lowercase().contains(q)) {
+                        matchedFields.add(fn)
+                    }
+                }
             }
+
+            if (!queryIsBlank && !nameMatched && matchedFields.isEmpty()) continue
+
+            val srcArchive = dt.sourceArchive
+            val isUserDefined = (localArchiveId != null &&
+                srcArchive != null &&
+                srcArchive.sourceArchiveID == localArchiveId) ||
+                srcArchive?.archiveType == ArchiveType.PROGRAM
+
+            hits.add(SearchHit(dt, isUserDefined, nameMatched, matchedFields.distinct()))
+        }
+
+        if (hits.isEmpty()) {
+            appendLine("No data types matched \"$query\".")
+            appendLine("  Use action=create to define a new type.")
             return
         }
-        appendLine("Components:")
-        for (i in 0 until c.numComponents) {
-            val comp = c.getComponent(i) ?: continue
-            appendLine("  [$i] ${comp.fieldName ?: "<unnamed>"}: ${comp.dataType.name} @ offset ${comp.offset}")
+
+        hits.sortWith(compareBy({ !it.isUserDefined }, { it.dt.name.lowercase() }))
+
+        val total = hits.size
+        appendLine("Found $total match(es)${if (total > limit) " (showing first $limit)" else ""}.")
+
+        val shown = hits.take(limit)
+        val userHits = shown.filter { it.isUserDefined }
+        val otherHits = shown.filter { !it.isUserDefined }
+
+        if (userHits.isNotEmpty()) {
+            appendLine("")
+            appendLine("--- User-defined (this program): ${userHits.size} ---")
+            for (h in userHits) printSearchHit(h)
+        }
+        if (otherHits.isNotEmpty()) {
+            appendLine("")
+            appendLine("--- Built-in / architecture / imported: ${otherHits.size} ---")
+            for (h in otherHits) printSearchHit(h)
+        }
+
+        if (userHits.isEmpty()) {
+            appendLine("")
+            appendLine("Tip: No user-defined types matched. Use action=create to define your own " +
+                "struct/union/enum/typedef, then it will appear here first.")
         }
     }
 
-    // ── component helpers (preserved from create_data_type) ───────────────
-
-    @Suppress("UNCHECKED_CAST")
-    private fun addComponents(composite: Composite, raw: String) {
-        val comps = try {
-            com.fasterxml.jackson.databind.ObjectMapper().readValue(raw, List::class.java) as List<Map<String, Any?>>
-        } catch (_: Exception) {
-            appendLine("Warning: could not parse components JSON, using empty")
-            emptyList()
+    private fun printSearchHit(h: SearchHit) {
+        val dt = h.dt
+        val kind = typeKindLabel(dt)
+        val origin = if (h.isUserDefined) "user" else "builtin"
+        val cat = dt.categoryPath?.path ?: "/"
+        appendLine("  • ${dt.name}  [$kind, ${dt.length} bytes, $origin]  ($cat)")
+        if (h.nameMatched && h.matchedFields.isEmpty()) {
+            appendLine("      matched: name")
+        } else if (!h.nameMatched && h.matchedFields.isNotEmpty()) {
+            appendLine("      matched field(s): ${h.matchedFields.joinToString(", ")}")
+        } else if (h.nameMatched && h.matchedFields.isNotEmpty()) {
+            appendLine("      matched: name + field(s) ${h.matchedFields.joinToString(", ")}")
         }
-        for (comp in comps) {
-            val compName = comp["name"] as? String ?: ""
-            val typeName = comp["type"] as? String
-            val size = (comp["size"] as? Number)?.toInt() ?: -1
-            val dt: DataType = if (typeName != null) {
-                resolveDataType(composite.dataTypeManager, typeName) ?: run {
-                    appendLine("Warning: type '$typeName' not found, using undefined")
-                    Undefined1DataType.dataType
-                }
-            } else {
-                Undefined1DataType.dataType
+    }
+
+    private fun matchesTypeFilter(dt: DataType, filter: String): Boolean {
+        return when (filter) {
+            "", "all" -> true
+            "struct", "structure" -> dt is Structure
+            "union" -> dt is Union
+            "enum" -> dt is ghidra.program.model.data.Enum
+            "typedef" -> dt is TypeDef
+            "composite" -> dt is Composite
+            else -> true
+        }
+    }
+
+    private fun typeKindLabel(dt: DataType): String {
+        return when (dt) {
+            is Structure -> "struct"
+            is Union -> "union"
+            is ghidra.program.model.data.Enum -> "enum"
+            is TypeDef -> "typedef"
+            is Composite -> "composite"
+            else -> dt.javaClass.simpleName
+        }
+    }
+
+    // ── Parse C definition with storeDataType=true (shared by create & edit) ─
+
+    /**
+     * Parse a C definition string using CParser with storeDataType=true.
+     *
+     * CRITICAL: CParser(dtm, true, null) stores each parsed type directly into
+     * the DTM as it parses, ensuring that struct/union/enum components are
+     * fully persisted with proper DTM-backed DataType references. This is the
+     * only way to get a complete type definition stored in the program — using
+     * CParser(dtm) (storeDataType=false) produces in-memory temporary types
+     * whose components are lost when resolved.
+     *
+     * After parsing, the method collects ALL parsed types from the parser's
+     * getComposites() / getEnums() / getTypes() maps and returns them.
+     */
+    private fun parseAndStore(dtm: DataTypeManager, definition: String): List<DataType> {
+        // Auto-append a missing trailing semicolon — CParser requires it.
+        val normalized = definition.trim().let {
+            if (it.endsWith(";")) it else "$it;"
+        }
+        if (normalized != definition.trim()) {
+            appendLine("Note: auto-appended missing trailing ';'.")
+        }
+
+        // storeDataType=true: parser stores types into DTM during parsing.
+        // subDTMgrs=null: only use the program's DTM (no external archives).
+        val parser = CParser(dtm, true, null)
+
+        try {
+            parser.parse(normalized)
+        } catch (e: ParseException) {
+            appendLine("Error: failed to parse C definition:")
+            appendLine("  ${e.message}")
+            appendLine("")
+            appendLine("Common issues:")
+            appendLine("  - Missing semicolon at the end (auto-appended, but check for other issues)")
+            appendLine("  - Unknown type names (define them first or use built-in types)")
+            appendLine("  - Syntax errors in struct/union/enum body")
+            return emptyList()
+        }
+
+        // Collect all parsed types from the parser's maps.
+        // getComposites() → struct/union definitions
+        // getEnums() → enum definitions
+        // getTypes() → typedef definitions
+        // getFunctions() → function signature definitions
+        val allParsed = mutableListOf<DataType>()
+        allParsed += parser.getComposites().values
+        allParsed += parser.getEnums().values
+        allParsed += parser.getTypes().values
+
+        if (allParsed.isEmpty()) {
+            appendLine("Error: CParser parsed the definition but produced no data types.")
+            appendLine("  Ensure the definition contains a struct/union/enum/typedef definition,")
+            appendLine("  not just a declaration (e.g. 'struct foo;' is a declaration,")
+            appendLine("  'struct foo { int x; };' is a definition).")
+            return emptyList()
+        }
+
+        return allParsed
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────
+
+    private fun findDataTypeByName(dtm: DataTypeManager, name: String): DataType? {
+        val rootDt = dtm.getDataType(CategoryPath.ROOT, name)
+        if (rootDt != null) return rootDt
+        return searchCategory(dtm.rootCategory, name)
+    }
+
+    private fun searchCategory(cat: Category, name: String): DataType? {
+        for (dt in cat.dataTypes) {
+            if (dt.name == name) return dt
+        }
+        for (subCat in cat.categories) {
+            searchCategory(subCat, name)?.let { return it }
+        }
+        return null
+    }
+
+    private fun printDataTypeSummary(dt: DataType) {
+        appendLine("Name: ${dt.name}")
+        appendLine("  Category: ${dt.categoryPath.path}")
+        appendLine("  Type: ${dt.javaClass.simpleName}")
+        appendLine("  Length: ${dt.length} bytes")
+        appendLine("  Alignment: ${dt.alignment} bytes")
+        if (dt.description.isNotBlank()) {
+            appendLine("  Description: ${dt.description}")
+        }
+
+        if (dt is Composite) {
+            appendLine("")
+            printCompositeLayout(dt)
+        } else if (dt is ghidra.program.model.data.Enum) {
+            appendLine("")
+            printEnumLayout(dt)
+        } else if (dt is TypeDef) {
+            appendLine("")
+            appendLine("  Typedef target: ${dt.dataType.name} (${dt.dataType.length} bytes)")
+        } else if (dt is FunctionDefinitionDataType) {
+            appendLine("")
+            appendLine("  Function signature: ${dt.prototypeString}")
+        }
+    }
+
+    private fun printCompositeLayout(c: Composite) {
+        if (c is Structure) {
+            appendLine("Layout (structure, ${c.numComponents} component(s)):")
+            for (i in 0 until c.numComponents) {
+                val comp = c.getComponent(i) ?: continue
+                val fieldName = comp.fieldName ?: "<unnamed>"
+                appendLine("  [$i] offset 0x${comp.offset.toString(16)}: $fieldName: ${comp.dataType.name} (${comp.length} bytes)")
             }
-            val actualSize = if (size > 0 && dt.isZeroLength()) size else dt.length
-            if (composite is StructureDataType) {
-                composite.add(dt, if (actualSize > 0) actualSize else 1, compName, null)
-            } else {
-                (composite as UnionDataType).add(dt, compName, null)
+        } else if (c is Union) {
+            appendLine("Layout (union, ${c.numComponents} member(s)):")
+            for (i in 0 until c.numComponents) {
+                val comp = c.getComponent(i) ?: continue
+                val fieldName = comp.fieldName ?: "<unnamed>"
+                appendLine("  [$i] $fieldName: ${comp.dataType.name} (${comp.length} bytes)")
             }
         }
     }
 
-    private fun resolveDataType(dtm: DataTypeManager, name: String): DataType? {
-        return dtm.getDataType(CategoryPath.ROOT, name)
+    private fun printEnumLayout(e: ghidra.program.model.data.Enum) {
+        val names = e.getNames()
+        appendLine("Enum values (${names.size}):")
+        for (name in names) {
+            appendLine("  $name = ${e.getValue(name)}")
+        }
     }
 }

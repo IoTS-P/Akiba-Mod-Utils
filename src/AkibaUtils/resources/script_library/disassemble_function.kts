@@ -78,8 +78,8 @@ class DisassembleFunction : AkibaScript() {
                 val addrStr = scriptArgs["address"] as? String
                     ?: run { appendLine("Error: 'address' required in center mode"); return }
                 val center = parseAddr(addrStr, addrFactory) ?: run { return }
-                val before = ((scriptArgs["before"] as? Number)?.toInt() ?: 8).coerceAtLeast(0)
-                val after = ((scriptArgs["after"] as? Number)?.toInt() ?: 24).coerceAtLeast(1)
+                val before = ((scriptArgs["before"] as? Number)?.toInt() ?: 10).coerceAtLeast(0)
+                val after = ((scriptArgs["after"] as? Number)?.toInt() ?: 100).coerceAtLeast(1)
 
                 // Clamp the walk to the containing function's body so a
                 // small function (< before+after instructions) does not
