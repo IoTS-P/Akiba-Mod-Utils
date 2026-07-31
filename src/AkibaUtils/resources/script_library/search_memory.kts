@@ -39,9 +39,9 @@ class SearchMemory : AkibaScript() {
         val contextBytes = ((scriptArgs["contextBytes"] as? Number)?.toInt() ?: DEFAULT_CONTEXT_BYTES).coerceIn(0, 256)
 
         if (!patternStr.isNullOrBlank()) {
-            searchRegex(program, patternStr, limit)
+            searchRegex(program!!, patternStr, limit)
         } else {
-            searchBytes(program, bytesStr!!, limit, contextBytes)
+            searchBytes(program!!, bytesStr!!, limit, contextBytes)
         }
     }
 

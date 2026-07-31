@@ -8,7 +8,7 @@ import ghidra.program.model.address.Address
 
 class GetXrefs : AkibaScript() {
     override suspend fun execute() {
-        val target = scriptArgs["target"] as? String
+        val target = (scriptArgs["target"] as? String) ?: (scriptArgs["address"] as? String)
             ?: run { appendLine("Error: 'target' parameter is required"); return }
         val direction = (scriptArgs["direction"] as? String)?.lowercase() ?: "both"
 

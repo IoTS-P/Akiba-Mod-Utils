@@ -80,16 +80,29 @@ fun HighFunction.getBlockEndsWith(addr: Address): PcodeBlockBasic? {
 
 /**
  * 获取函数的默认反编译结果。
- * 使用默认的超时时间（11 秒）对函数进行反编译。
  *
+ * @param timeoutSeconds 反编译超时时间（秒）。默认 120 秒，足以处理
+ *   10000+ 条指令的大型函数。之前的默认值 11 秒对于超大函数会静默失败
+ *   （反编译不抛异常，但 [DecompileResults.decompileCompleted] 返回 false，
+ *   导致后续获取 C 代码时得到空结果或 NPE）。Ghidra GUI 的反编译器通常
+ *   不设硬超时，因此 GUI 中等待数秒后仍能成功。
  * @return 反编译结果对象。
+ * @throws IllegalStateException 如果反编译未在超时时间内完成（超时）。
  * @throws IllegalArgumentException 如果反编译过程中发生错误。
  */
-@Throws(IllegalArgumentException::class)
-fun Function.getDefaultDecompResult(): DecompileResults {
+@Throws(IllegalArgumentException::class, IllegalStateException::class)
+fun Function.getDefaultDecompResult(timeoutSeconds: Int = 120): DecompileResults {
     val decompiler = HighFunctionUtil.getDefaultDecompiler(program)
-    val result = decompiler.decompileFunction(this, 10, TimeoutTaskMonitor.timeoutIn(11, TimeUnit.SECONDS))
+    // monitor 超时比 decompileFunction 的 timeout 多 2 秒，确保
+    // decompileFunction 的超时逻辑先触发（返回更精确的 errorMessage），
+    // 而不是 monitor 强制取消导致结果不完整。
+    val monitor = TimeoutTaskMonitor.timeoutIn((timeoutSeconds + 2).toLong(), TimeUnit.SECONDS)
+    val result = decompiler.decompileFunction(this, timeoutSeconds, monitor)
     decompiler.closeProgram()
+    if (!result.decompileCompleted()) {
+        val msg = result.errorMessage ?: "decompilation did not complete within ${timeoutSeconds}s"
+        throw IllegalStateException("Decompilation failed for ${this.name} @ ${this.entryPoint}: $msg")
+    }
     return result
 }
 
@@ -97,18 +110,20 @@ fun Function.getDefaultDecompResult(): DecompileResults {
  * 获取函数的 C 代码结构。
  * 返回反编译后的 C 代码标记组，包含完整的语法树信息。
  *
+ * @param timeoutSeconds 反编译超时时间（秒），默认 120。
  * @return C 代码标记组对象。
  */
-fun Function.getCCodeStructure(): ClangTokenGroup {
-    return getDefaultDecompResult().cCodeMarkup
+fun Function.getCCodeStructure(timeoutSeconds: Int = 120): ClangTokenGroup {
+    return getDefaultDecompResult(timeoutSeconds).cCodeMarkup
 }
 
 /**
  * 获取函数的 C 代码字符串表示。
  * 返回反编译后的格式化 C 代码文本。
  *
+ * @param timeoutSeconds 反编译超时时间（秒），默认 120。
  * @return C 代码字符串。
  */
-fun Function.getCCode(): String {
-    return getDefaultDecompResult().decompiledFunction.c
+fun Function.getCCode(timeoutSeconds: Int = 120): String {
+    return getDefaultDecompResult(timeoutSeconds).decompiledFunction.c
 }

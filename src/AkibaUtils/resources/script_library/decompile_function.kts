@@ -1,7 +1,7 @@
 // @name: decompile_function
 // @author: Akiba
 // @description: Decompile a function by name or address and return the C pseudocode
-// @parameters: target (string) - Function name or hex address (e.g. "main" or "0x401000")
+// @parameters: target (string) - Function name or hex address (e.g. "main" or "0x401000"); timeout (integer, optional) - Decompilation timeout in seconds (default 120, max 600). Increase for very large functions.
 
 import org.iotsplab.akiba.script.AkibaScript
 import ghidra.app.decompiler.DecompInterface
@@ -13,6 +13,8 @@ class DecompileFunction : AkibaScript() {
     override suspend fun execute() {
         val target = scriptArgs["target"] as? String
             ?: run { appendLine("Error: 'target' parameter is required"); return }
+
+        val timeout = ((scriptArgs["timeout"] as? Number)?.toInt() ?: 120).coerceIn(10, 600)
 
         val fm = program!!.functionManager
 
@@ -46,6 +48,13 @@ class DecompileFunction : AkibaScript() {
         appendLine("// Function: ${func.name} @ ${func.entryPoint}")
         appendLine("// Size: ${func.body.numAddresses} bytes")
         appendLine("")
-        appendLine(func.getCCode())
+        try {
+            appendLine(func.getCCode(timeout))
+        } catch (e: Exception) {
+            appendLine("// Decompilation failed: ${e.message}")
+            if (e is IllegalStateException && e.message?.contains("within") == true) {
+                appendLine("// This is likely a TIMEOUT. Re-run with a larger 'timeout' parameter (e.g. 300 or 600).")
+            }
+        }
     }
 }

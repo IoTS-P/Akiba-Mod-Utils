@@ -21,7 +21,7 @@ class WriteMemory : AkibaScript() {
             ?: run { appendLine("Error: 'data' parameter is required"); return }
 
         // ── Parse address ────────────────────────────────────────────────
-        val start = try { program.addressFactory.getAddress(addressStr) }
+        val start = try { program!!.addressFactory.getAddress(addressStr) }
             catch (_: Exception) { null }
             ?: run { appendLine("Error: invalid address '$addressStr'"); return }
 
@@ -29,7 +29,7 @@ class WriteMemory : AkibaScript() {
         val bigEndian = when (((scriptArgs["endian"] as? String) ?: "program").lowercase()) {
             "big", "be" -> true
             "little", "le" -> false
-            else -> program.language.isBigEndian
+            else -> program!!.language.isBigEndian
         }
 
         // ── Convert data to byte array based on format ───────────────────
@@ -75,7 +75,7 @@ class WriteMemory : AkibaScript() {
         }
 
         // ── Validate memory range is inside a single mapped block ────────
-        val block = program.memory.getBlock(start)
+        val block = program!!.memory.getBlock(start)
         if (block == null) {
             appendLine("Error: address $start is not inside any memory block")
             appendLine("  Use list_memory_segments to see all available blocks.")
@@ -92,7 +92,7 @@ class WriteMemory : AkibaScript() {
         // ── Read original bytes (for display / audit) ────────────────────
         val originalBytes = ByteArray(bytes.size)
         try {
-            program.memory.getBytes(start, originalBytes)
+            program!!.memory.getBytes(start, originalBytes)
         } catch (e: MemoryAccessException) {
             appendLine("Error: failed to read original bytes at $start: ${e.message}")
             return
@@ -113,15 +113,15 @@ class WriteMemory : AkibaScript() {
         appendLine("")
 
         // ── Write in a transaction ───────────────────────────────────────
-        val txId = program.startTransaction("write_memory @ $start (${bytes.size} bytes)")
+        val txId = program!!.startTransaction("write_memory @ $start (${bytes.size} bytes)")
         var committed = false
         try {
-            program.memory.setBytes(start, bytes)
+            program!!.memory.setBytes(start, bytes)
             committed = true
         } catch (e: Exception) {
             appendLine("Error: write failed: ${e.javaClass.simpleName}: ${e.message}")
         } finally {
-            program.endTransaction(txId, committed)
+            program!!.endTransaction(txId, committed)
         }
 
         if (!committed) return
@@ -130,7 +130,7 @@ class WriteMemory : AkibaScript() {
         val readBack = ByteArray(bytes.size)
         var verifyOk = false
         try {
-            program.memory.getBytes(start, readBack)
+            program!!.memory.getBytes(start, readBack)
             verifyOk = readBack.contentEquals(bytes)
         } catch (_: Exception) { }
 

@@ -77,14 +77,15 @@ suspend fun Program.allUnmappedDataAddressInC(threadNumber: Int = 1): Pair<List<
     val dispatcher = ForkJoinPool(threadNumber).asCoroutineDispatcher()
     coroutineScope {
         functionManager.getFunctions(true).map { func -> async(dispatcher) {
-            // In some cases, the decompiling process may fail due to bad function definitions,
-            // so we need to check if it is null
-            addresses.addAll(func.getDefaultDecompResult().cCodeMarkup
-                ?.allUnmappedDataAddress(this@allUnmappedDataAddressInC)
-                ?: run {
+            // In some cases, the decompiling process may fail due to bad function definitions
+            // or timeout, so we catch the exception and record the function as failed.
+            try {
+                addresses.addAll(func.getDefaultDecompResult().cCodeMarkup
+                    ?.allUnmappedDataAddress(this@allUnmappedDataAddressInC)
+                    ?: listOf())
+            } catch (_: Exception) {
                 failedFunctions.add(func)
-                listOf()
-            })
+            }
         } }.awaitAll()
     }
     return addresses.toList() to failedFunctions.toList()
@@ -119,14 +120,13 @@ suspend fun Program.allScalarsInC(threadNumber: Int = 1): Pair<List<Long>, List<
     val dispatcher = pool.asCoroutineDispatcher()
     coroutineScope {
         functionManager.getFunctions(true).map { func -> async(dispatcher) {
-            // In some cases, the decompiling process may fail due to bad function definitions,
-            // so we need to check if it is null
-            scalars.addAll(func.getDefaultDecompResult().cCodeMarkup
-                ?.allScalars()
-                ?: run {
+            try {
+                scalars.addAll(func.getDefaultDecompResult().cCodeMarkup
+                    ?.allScalars()
+                    ?: listOf())
+            } catch (_: Exception) {
                 failedFunctions.add(func)
-                listOf()
-            })
+            }
         } }.awaitAll()
     }
     dispatcher.close()

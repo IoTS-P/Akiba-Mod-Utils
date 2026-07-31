@@ -48,7 +48,8 @@ class ManageDataType : AkibaScript() {
                     doGet(dtm, name)
                 }
                 "search" -> {
-                    val query = (scriptArgs["query"] as? String) ?: scriptArgs["keyword"] as? String ?: ""
+                    val query = (scriptArgs["query"] as? String) ?: (scriptArgs["keyword"] as? String) 
+                        ?: (scriptArgs["name"] as? String) ?: ""
                     val typeFilter = (scriptArgs["type"] as? String)?.lowercase() ?: "all"
                     val limit = ((scriptArgs["limit"] as? Number)?.toInt() ?: 50).coerceIn(1, 500)
                     doSearch(dtm, query, typeFilter, limit)
@@ -216,10 +217,35 @@ class ManageDataType : AkibaScript() {
                 "Valid filters: all, struct, union, enum, typedef, composite.")
         }
 
-        appendLine("=== Search Data Types ===")
-        appendLine("Query: ${if (queryIsBlank) "(empty — listing all)" else "\"$query\""}  " +
-            "(type filter: ${if (typeFilter.isBlank()) "all" else typeFilter}, limit: $limit)")
-        appendLine("")
+        // ── Detect parameter misuse ──────────────────────────────────────
+        // The search action accepts three parameters: 'query' (substring
+        // search on type names and field names), 'type' (kind filter), and
+        // 'limit'. If the LLM passes a search term via some other parameter
+        // name (e.g. "name" or "search"), it won't match anything and the
+        // script would fall back to listing all types — which is truncated
+        // to `limit` and may mislead the LLM into thinking a type doesn't
+        // exist. We detect this and warn explicitly.
+        val validSearchParams = setOf("query", "type", "limit", "action")
+        val extraParams = scriptArgs.keys - validSearchParams
+        if (queryIsBlank && extraParams.isNotEmpty()) {
+            appendLine("=== Search Data Types ===")
+            appendLine("WARNING: You passed parameters ${extraParams.joinToString { "'$it'" }} but search only " +
+                "accepts 'query', 'type', and 'limit'.")
+            appendLine("Your search term was not recognized — returning ALL types (truncated to $limit).")
+            appendLine("To search for a specific type, pass it as: query=\"<type name or field name>\"")
+            appendLine("")
+        } else if (queryIsBlank) {
+            appendLine("=== Search Data Types ===")
+            appendLine("Query: (empty — listing all types)")
+            appendLine("Type filter: ${if (typeFilter.isBlank()) "all" else typeFilter}")
+            appendLine("Limit: $limit (only the first $limit types are shown — many more may exist)")
+            appendLine("Tip: Pass query=\"<name>\" to search for a specific type instead of listing all.")
+            appendLine("")
+        } else {
+            appendLine("=== Search Data Types ===")
+            appendLine("Query: \"$query\"  (type filter: ${if (typeFilter.isBlank()) "all" else typeFilter}, limit: $limit)")
+            appendLine("")
+        }
 
         val localArchive = dtm.localSourceArchive
         val localArchiveId = localArchive?.sourceArchiveID
@@ -256,15 +282,26 @@ class ManageDataType : AkibaScript() {
         }
 
         if (hits.isEmpty()) {
-            appendLine("No data types matched \"$query\".")
-            appendLine("  Use action=create to define a new type.")
+            if (queryIsBlank) {
+                appendLine("No data types found in the program (the DTM is empty).")
+            } else {
+                appendLine("No data types matched \"$query\".")
+                appendLine("  This means the type is NOT defined in the program.")
+                appendLine("  Use action=create with a C definition to create it, e.g.:")
+                appendLine("    action=create definition=\"struct $query { int field1; };\"")
+            }
             return
         }
 
         hits.sortWith(compareBy({ !it.isUserDefined }, { it.dt.name.lowercase() }))
 
         val total = hits.size
-        appendLine("Found $total match(es)${if (total > limit) " (showing first $limit)" else ""}.")
+        if (total > limit) {
+            appendLine("Found $total match(es) — showing first $limit. " +
+                "Pass a more specific query or increase 'limit' to see more.")
+        } else {
+            appendLine("Found $total match(es).")
+        }
 
         val shown = hits.take(limit)
         val userHits = shown.filter { it.isUserDefined }

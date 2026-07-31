@@ -211,12 +211,23 @@ class ManageFuncSignature : AkibaScript() {
         // full C parser (CParser.parse) which handles function pointers
         // natively.
         //
-        // Pre-normalize: if the return type is a pointer and the '*' is
-        // adjacent to the function name (e.g. "void*foo(...)" or
-        // "void *foo(...)"), CParserUtils may misparse the '*' as part of
-        // the function name. We insert a space between the '*' and the
-        // function name to prevent this.
-        val normalizedSig = normalizeSignature(signatureText)
+        // Pre-normalize:
+        // 1. If the return type is a pointer and the '*' is adjacent to the
+        //    function name, insert a space to prevent CParser from treating
+        //    the '*' as part of the function name.
+        // 2. Replace 'va_list' parameters with '...' (varargs), since Ghidra's
+        //    CParser does not understand va_list but does understand '...'.
+        //    'va_list' is only valid as the LAST parameter — if it appears
+        //    elsewhere, reject the signature.
+        val vaListError = checkVaListPosition(signatureText)
+        if (vaListError != null) {
+            if (scriptArgs["operations"] == null) {
+                appendLine("Error: $vaListError")
+            }
+            return false
+        }
+        val vaListConverted = convertVaListToVarargs(signatureText)
+        val normalizedSig = normalizeSignature(vaListConverted)
         val funcDef = parseSignatureWithFallback(program, normalizedSig)
         if (funcDef == null) return false
 
@@ -324,6 +335,119 @@ class ManageFuncSignature : AkibaScript() {
     }
 
     // ── Helpers: validate data types ──────────────────────────────────────
+
+    /**
+     * Check that 'va_list' only appears as the last parameter in the
+     * signature. Returns an error message if va_list is found in an
+     * invalid position, or null if OK (or not present).
+     */
+    private fun checkVaListPosition(signatureText: String): String? {
+        val s = signatureText.trim()
+        val firstParen = s.indexOf('(')
+        if (firstParen < 0) return null
+
+        // Extract the parameter list (between the outermost parentheses).
+        val lastParen = s.lastIndexOf(')')
+        if (lastParen <= firstParen) return null
+        val paramList = s.substring(firstParen + 1, lastParen)
+
+        // Split on commas at depth 0 (not inside nested parens/brackets).
+        val params = splitParams(paramList)
+        if (params.isEmpty()) return null
+
+        // Find all va_list parameters.
+        val vaListIndices = params.indices.filter { idx ->
+            val p = params[idx].trim()
+            // Match "va_list <name>" or just "va_list" (with optional whitespace/pointer)
+            val typePart = p.replace(Regex("""\w+$"""), "").trim() // strip trailing identifier (param name)
+            typePart.contains(Regex("""\bva_list\b"""))
+        }
+
+        if (vaListIndices.isEmpty()) return null
+
+        // va_list must be the last parameter.
+        val lastIdx = params.lastIndex
+        for (idx in vaListIndices) {
+            if (idx != lastIdx) {
+                return "va_list parameter at position ${idx + 1} is not the last parameter. " +
+                    "In C, va_list (varargs) must always be the final parameter. " +
+                    "Reorder the parameters so va_list is last."
+            }
+        }
+
+        return null
+    }
+
+    /**
+     * Replace 'va_list' parameters with '...' so that CParser interprets
+     * them as varargs. Only replaces the last parameter (already validated
+     * by checkVaListPosition). Also handles 'va_list *' and named variants
+     * like 'va_list args' or 'va_list *args'.
+     *
+     * Example:
+     *   "int printf(const char *fmt, va_list ap)" → "int printf(const char *fmt, ...)"
+     */
+    private fun convertVaListToVarargs(signatureText: String): String {
+        val s = signatureText.trim()
+        val firstParen = s.indexOf('(')
+        if (firstParen < 0) return s
+        val lastParen = s.lastIndexOf(')')
+        if (lastParen <= firstParen) return s
+
+        val before = s.substring(0, firstParen + 1)
+        val paramList = s.substring(firstParen + 1, lastParen)
+        val after = s.substring(lastParen)
+
+        // Check if the param list contains va_list at all.
+        if (!paramList.contains(Regex("""\bva_list\b"""))) return s
+
+        val params = splitParams(paramList).toMutableList()
+        if (params.isEmpty()) return s
+
+        // Replace the last parameter if it contains va_list.
+        val lastParam = params[params.lastIndex].trim()
+        if (lastParam.contains(Regex("""\bva_list\b"""))) {
+            params[params.lastIndex] = "..."
+            val converted = before + params.joinToString(", ") { it.trim() } + after
+            if (converted != s && scriptArgs["operations"] == null) {
+                appendLine("Note: converted va_list parameter to '...' (varargs).")
+            }
+            return converted
+        }
+
+        return s
+    }
+
+    /**
+     * Split a comma-separated parameter list, respecting nested parentheses
+     * and brackets (so that function pointer parameters like
+     * "void (*cb)(int, void*)" are not split on the inner commas).
+     */
+    private fun splitParams(paramList: String): List<String> {
+        val result = mutableListOf<String>()
+        val current = StringBuilder()
+        var depth = 0
+        for (ch in paramList) {
+            when (ch) {
+                '(', '[' -> { depth++; current.append(ch) }
+                ')', ']' -> { depth--; current.append(ch) }
+                ',' -> {
+                    if (depth == 0) {
+                        result.add(current.toString())
+                        current.clear()
+                    } else {
+                        current.append(ch)
+                    }
+                }
+                else -> current.append(ch)
+            }
+        }
+        val last = current.toString().trim()
+        if (last.isNotEmpty() || result.isNotEmpty()) {
+            result.add(current.toString())
+        }
+        return result
+    }
 
     /**
      * Normalize a C function signature string to prevent CParser from

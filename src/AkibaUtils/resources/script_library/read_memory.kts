@@ -21,17 +21,17 @@ class ReadMemory : AkibaScript() {
         val bigEndian = when (((scriptArgs["endian"] as? String) ?: "program").lowercase()) {
             "big", "be" -> true
             "little", "le" -> false
-            else -> program.language.isBigEndian
+            else -> program!!.language.isBigEndian
         }
 
-        val start = try { program.addressFactory.getAddress(startText) }
+        val start = try { program!!.addressFactory.getAddress(startText) }
             catch (_: Exception) { null }
         if (start == null) {
             appendLine("Error: invalid address '$startText'")
             return
         }
 
-        val block = program.memory.getBlock(start)
+        val block = program!!.memory.getBlock(start)
         if (block == null) {
             appendLine("Error: address $start is not inside any memory block")
             return
@@ -44,7 +44,7 @@ class ReadMemory : AkibaScript() {
         }
 
         val bytes = ByteArray(size)
-        try { program.memory.getBytes(start, bytes) }
+        try { program!!.memory.getBytes(start, bytes) }
         catch (e: Exception) { appendLine("Error reading memory: ${e.message}"); return }
 
         appendLine("=== Memory Region ===")

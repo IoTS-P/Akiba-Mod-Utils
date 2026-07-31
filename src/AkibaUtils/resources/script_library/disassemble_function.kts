@@ -1,7 +1,8 @@
 // @name: disassemble_function
 // @author: Akiba
-// @description: Disassemble instructions from a function, address range, or centered around an address. Supports three modes: (1) legacy — target a function by name/address; (2) range — specify startAddress + endAddress; (3) center — specify address + before + after. By default the output is restricted to a single function body; set force=true to cross function boundaries.
-// @parameters: target (string, optional) - Legacy mode: function name or hex address (e.g. "main" or "0x401000"); startAddress (string, optional) - Range mode: start of disassembly range (hex, inclusive); endAddress (string, optional) - Range mode: end of disassembly range (hex, EXCLUSIVE — instructions are emitted for [startAddress, endAddress); endAddress itself is NOT included. Set endAddress to the start of the next symbol so the boundary check cannot trip on the next function's first byte); address (string, optional) - Center mode: the address to center around; before (integer, optional) - Center mode: instructions to show before the center address (default 8); after (integer, optional) - Center mode: instructions to show from/after the center address (default 24); showBytes (boolean, optional) - Include raw instruction bytes column (default: true); showComments (boolean, optional) - Include EOL/pre/post comments (default: true); addressAfter (string, optional) - Resume point: skip instructions at or before this address; force (boolean, optional) - Allow crossing function boundaries (default: false)
+// @description: Disassemble instructions from a function, address range, or centered around an address. Supports three modes: (1) range — specify startAddress + endAddress; (2) center — specify address + before + after; (3) legacy — target a function by name/address. By default the output is restricted to a single function body; set force=true to cross function boundaries. Output defaults to compact JSON format (outputFormat="json"); set outputFormat="text" for human-readable aligned text.
+// @parameters: address (string, optional) - Center mode: the address to center around; startAddress (string, optional) - Range mode: start of disassembly range (hex, inclusive); endAddress (string, optional) - Range mode: end of disassembly range (hex, EXCLUSIVE); before (integer, optional) - Center mode: instructions to show before the center address (default 8); after (integer, optional) - Center mode: instructions to show from/after the center address (default 100 for text, 300 for json); showBytes (boolean, optional) - Include raw instruction bytes (default: true); showComments (boolean, optional) - Include comments (default: true); addressAfter (string, optional) - Resume point: skip instructions at or before this address; force (boolean, optional) - Allow crossing function boundaries (default: false); outputFormat (string, optional, default "text") - "text" (human-readable aligned text) or "json" (default, compact structured output, larger window)
+// @dedup: args_only
 
 import org.iotsplab.akiba.script.AkibaScript
 import ghidra.program.model.address.Address
@@ -10,11 +11,8 @@ import ghidra.program.model.listing.Function
 import ghidra.program.model.listing.CommentType
 import ghidra.program.model.listing.Instruction
 
-val MAX_RANGE_BYTES = 4096 // safety cap for any single call
-
 class DisassembleFunction : AkibaScript() {
 
-    // Package-level data class visible to all methods of this class
     data class RangeInfo(
         val rangeStart: Address,
         val rangeEnd: Address,
@@ -30,20 +28,14 @@ class DisassembleFunction : AkibaScript() {
         val showComments = (scriptArgs["showComments"] as? Boolean) ?: true
         val addressAfterArg = scriptArgs["addressAfter"] as? String
         val force = (scriptArgs["force"] as? Boolean) ?: false
+        val useJson = ((scriptArgs["outputFormat"] as? String)?.lowercase() ?: "text") != "text"
+
+        // JSON mode allows a larger window since there's no alignment padding.
+        val maxRangeBytes = if (useJson) 8192 else 4096
+        val defaultAfter = if (useJson) 300 else 100
 
         // ── Step 1: Determine mode and compute instruction range ───────────
-        val resolved: RangeInfo = when {
-            // Range mode: startAddress + endAddress.
-            //
-            // endAddress is EXCLUSIVE — instructions are emitted for
-            // [startAddress, endAddress) and endAddress itself is not
-            // disassembled. This matches the convention used everywhere
-            // else in the audit pipeline (VulnDetector, VulnSubAgentHarness,
-            // VulnAuditHarnessCore.countProjectOwnedFunctionsInRange) and
-            // — most importantly — keeps the single-function boundary
-            // check from tripping on the next function's first byte when
-            // the LLM happens to pass the start of the next symbol as
-            // endAddress.
+        var resolved: RangeInfo = when {
             scriptArgs.containsKey("startAddress") || scriptArgs.containsKey("endAddress") -> {
                 val startStr = scriptArgs["startAddress"] as? String
                     ?: run { appendLine("Error: 'startAddress' required in range mode"); return }
@@ -57,35 +49,22 @@ class DisassembleFunction : AkibaScript() {
                     return
                 }
                 val size = end.subtract(start)
-                if (size > MAX_RANGE_BYTES) {
-                    appendLine("Error: range exceeds safety limit ($MAX_RANGE_BYTES bytes, got ${size} bytes). Narrow the range or use a more specific address.")
+                if (size > maxRangeBytes) {
+                    appendLine("Error: range exceeds safety limit ($maxRangeBytes bytes, got ${size} bytes). Narrow the range or use a more specific address.")
                     return
                 }
-                // The boundary check (and the iteration break) work in
-                // inclusive-end coordinates, so step `end` back by one
-                // address. `end > start` was just verified, so
-                // `end.previous()` is always a valid address in the same
-                // space (it can only be undefined when end is the very
-                // first address, which would require start to be before
-                // it and contradict the check above).
                 val inclusiveEnd = end.previous()
                 checkBoundary(start, inclusiveEnd, fm, force) ?: return
                 RangeInfo(start, inclusiveEnd, "range $start - $end (exclusive end)")
             }
 
-            // Center mode: address + before + after
             scriptArgs.containsKey("address") -> {
                 val addrStr = scriptArgs["address"] as? String
                     ?: run { appendLine("Error: 'address' required in center mode"); return }
                 val center = parseAddr(addrStr, addrFactory) ?: run { return }
                 val before = ((scriptArgs["before"] as? Number)?.toInt() ?: 10).coerceAtLeast(0)
-                val after = ((scriptArgs["after"] as? Number)?.toInt() ?: 100).coerceAtLeast(1)
+                val after = ((scriptArgs["after"] as? Number)?.toInt() ?: defaultAfter).coerceAtLeast(1)
 
-                // Clamp the walk to the containing function's body so a
-                // small function (< before+after instructions) does not
-                // spill into the adjacent function and get rejected by
-                // checkBoundary.  Only when force=true do we allow the
-                // walk to cross function boundaries.
                 val containingFunc = if (!force) fm.getFunctionContaining(center) else null
                 val bodyMin = containingFunc?.body?.minAddress
                 val bodyMax = containingFunc?.body?.maxAddress
@@ -114,18 +93,17 @@ class DisassembleFunction : AkibaScript() {
                 }
 
                 val size = try { lastAddr.subtract(walkStart) } catch (_: Exception) { 0L }
-                if (size > MAX_RANGE_BYTES) {
-                    appendLine("Error: center mode range exceeds safety limit ($MAX_RANGE_BYTES bytes, got ${size} bytes). Reduce before/after values or use force=true.")
+                if (size > maxRangeBytes) {
+                    appendLine("Error: center mode range exceeds safety limit ($maxRangeBytes bytes, got ${size} bytes). Reduce before/after values or use force=true.")
                     return
                 }
                 checkBoundary(walkStart, lastAddr, fm, force) ?: return
                 RangeInfo(walkStart, lastAddr, "centered at $center")
             }
 
-            // Legacy mode: target (function name or address)
             else -> {
                 val target = scriptArgs["target"] as? String
-                    ?: run { appendLine("Error: specify target (legacy), startAddress+endAddress (range), or address (center)"); return }
+                    ?: run { appendLine("Error: specify startAddress+endAddress (range), or address (center)"); return }
                 resolveLegacy(target, fm, addrFactory) ?: return
             }
         }
@@ -135,15 +113,35 @@ class DisassembleFunction : AkibaScript() {
             parseAddr(addressAfterArg, addrFactory) ?: return
         } else null
 
+        // ── Step 2a: Center-mode window re-base for addressAfter ────────
+        val isCenterMode = scriptArgs.containsKey("address") &&
+            !scriptArgs.containsKey("startAddress") && !scriptArgs.containsKey("endAddress")
+        if (addressAfter != null && isCenterMode && !force &&
+            addressAfter.compareTo(resolved.rangeEnd) >= 0) {
+            val fn = fm.getFunctionContaining(resolved.rangeStart)
+            val bodyMax = fn?.body?.maxAddress
+            val afterVal = ((scriptArgs["after"] as? Number)?.toInt() ?: defaultAfter).coerceAtLeast(1)
+            val firstNext = listing.getInstructionAfter(addressAfter)
+            if (firstNext != null && (bodyMax == null || firstNext.address.compareTo(bodyMax) <= 0)) {
+                val newStart = firstNext.address
+                var wf = afterVal
+                var newEnd = newStart
+                while (wf > 0) {
+                    val nxt = listing.getInstructionAfter(newEnd)
+                    if (nxt == null) break
+                    if (bodyMax != null && nxt.address.compareTo(bodyMax) > 0) break
+                    newEnd = nxt.address
+                    wf--
+                }
+                val sz = try { newEnd.subtract(newStart) } catch (_: Exception) { 0L }
+                if (sz <= maxRangeBytes) {
+                    resolved = RangeInfo(newStart, newEnd,
+                        "centered at ${scriptArgs["address"]}, resuming after $addressAfter")
+                }
+            }
+        }
+
         // ── Step 2b: Function-level instruction indexing ──────────────────
-        // For single-function ranges (non-force), walk the containing
-        // function's full body once to learn (a) how many instructions
-        // the function has in total and (b) the 1-based position of the
-        // window we are about to emit.  This lets us print a prominent
-        // "showing #X–#Y of N" banner up front — and, when more
-        // instructions remain, a clear addressAfter continuation hint
-        // at the TOP of the output where the LLM sees it first, rather
-        // than buried in the trailing footer.
         var totalInstrs = 0
         var firstEmittedIdx = 0
         var lastEmittedIdx = 0
@@ -171,25 +169,9 @@ class DisassembleFunction : AkibaScript() {
             }
         }
 
-        // ── Step 3: Emit instructions ──────────────────────────────────────
-        appendLine("; Disassembly: ${resolved.label}")
-        if (totalInstrs > 0 && firstEmittedIdx > 0) {
-            appendLine("; Function: $totalInstrs instructions total — showing #$firstEmittedIdx to #$lastEmittedIdx of $totalInstrs" +
-                (if (addressAfter != null) " (resuming after $addressAfter)" else ""))
-            val remaining = totalInstrs - lastEmittedIdx
-            if (remaining > 0) {
-                val resumeAddr = lastEmittedAddrPre
-                if (resumeAddr != null) {
-                    appendLine("; >>> $remaining more instructions after this batch — to continue, re-run disassemble_function with addressAfter=$resumeAddr")
-                }
-            }
-        } else if (addressAfter != null) {
-            appendLine("; Resuming from instructions strictly after $addressAfter")
-        }
-        appendLine("")
-
+        // ── Step 3: Collect instructions ──────────────────────────────────
         val insnIter = listing.getInstructions(resolved.rangeStart, true)
-        var count = 0
+        val emitted = mutableListOf<InsnData>()
         var skippedByFilter = 0
         var lastEmittedAddr: Address? = null
 
@@ -202,47 +184,180 @@ class DisassembleFunction : AkibaScript() {
                 if (cmp <= 0) { skippedByFilter++; continue }
             }
 
-            if (showComments) {
-                insn.getComment(CommentType.PRE)?.lineSequence()?.forEach { line -> appendLine("    ; $line") }
-                insn.getComment(CommentType.PLATE)?.lineSequence()?.forEach { line -> appendLine("    ; $line") }
-            }
-
             val addrStr = insn.address.toString()
             val bytesStr = if (showBytes) {
-                try { insn.bytes.joinToString(" ") { "%02x".format(it.toInt() and 0xff) }.padEnd(24) }
-                catch (_: Exception) { "".padEnd(24) }
-            } else ""
+                try { insn.bytes.joinToString(" ") { "%02x".format(it.toInt() and 0xff) } }
+                catch (_: Exception) { "" }
+            } else null
 
             val asm = insn.toString()
-            val eol = if (showComments) {
-                insn.getComment(CommentType.EOL)?.let { "  ; $it" } ?: ""
-            } else ""
 
-            appendLine(if (showBytes) "$addrStr  $bytesStr  $asm$eol" else "$addrStr  $asm$eol")
+            val preComment = if (showComments) insn.getComment(CommentType.PRE) else null
+            val plateComment = if (showComments) insn.getComment(CommentType.PLATE) else null
+            val eolComment = if (showComments) insn.getComment(CommentType.EOL) else null
+            val postComment = if (showComments) insn.getComment(CommentType.POST) else null
 
+            emitted.add(InsnData(addrStr, bytesStr, asm, eolComment, preComment, plateComment, postComment))
+            lastEmittedAddr = insn.address
+        }
+
+        // ── Step 4: Emit output ────────────────────────────────────────────
+        if (useJson) {
+            emitJson(resolved, emitted, totalInstrs, firstEmittedIdx, lastEmittedIdx,
+                lastEmittedAddrPre, lastEmittedAddr, addressAfter, skippedByFilter)
+        } else {
+            emitText(resolved, emitted, totalInstrs, firstEmittedIdx, lastEmittedIdx,
+                lastEmittedAddrPre, lastEmittedAddr, addressAfter, skippedByFilter, showComments)
+        }
+    }
+
+    // ── Data class for a single instruction ────────────────────────────────
+    private data class InsnData(
+        val address: String,
+        val bytes: String?,
+        val asm: String,
+        val eolComment: String?,
+        val preComment: String?,
+        val plateComment: String?,
+        val postComment: String?
+    )
+
+    // ── JSON output ────────────────────────────────────────────────────────
+    private fun emitJson(
+        resolved: RangeInfo,
+        emitted: List<InsnData>,
+        totalInstrs: Int,
+        firstEmittedIdx: Int,
+        lastEmittedIdx: Int,
+        lastEmittedAddrPre: Address?,
+        lastEmittedAddr: Address?,
+        addressAfter: Address?,
+        skippedByFilter: Int
+    ) {
+        val sb = StringBuilder()
+        sb.append("{")
+
+        // Metadata
+        sb.append("\"label\":\"").append(escapeJson(resolved.label)).append("\",")
+        sb.append("\"emitted\":").append(emitted.size).append(",")
+        sb.append("\"skipped\":").append(skippedByFilter).append(",")
+        if (totalInstrs > 0) {
+            sb.append("\"total\":").append(totalInstrs).append(",")
+            sb.append("\"firstIdx\":").append(firstEmittedIdx).append(",")
+            sb.append("\"lastIdx\":").append(lastEmittedIdx).append(",")
+        }
+        if (addressAfter != null) {
+            sb.append("\"resumingAfter\":\"").append(addressAfter).append("\",")
+        }
+
+        // Resume hint
+        if (lastEmittedAddr != null) {
+            val hasMore = totalInstrs == 0 || lastEmittedIdx < totalInstrs
+            if (hasMore) {
+                sb.append("\"resumeFrom\":\"").append(lastEmittedAddr).append("\",")
+            }
+        }
+
+        // Instructions array
+        sb.append("\"instructions\":[")
+        for ((i, insn) in emitted.withIndex()) {
+            if (i > 0) sb.append(",")
+            sb.append("{")
+            sb.append("\"a\":\"").append(insn.address).append("\"")
+            if (insn.bytes != null) {
+                sb.append(",\"b\":\"").append(insn.bytes).append("\"")
+            }
+            sb.append(",\"s\":\"").append(escapeJson(insn.asm)).append("\"")
+            if (insn.eolComment != null) {
+                sb.append(",\"eol\":\"").append(escapeJson(insn.eolComment)).append("\"")
+            }
+            if (insn.preComment != null) {
+                sb.append(",\"pre\":\"").append(escapeJson(insn.preComment)).append("\"")
+            }
+            if (insn.plateComment != null) {
+                sb.append(",\"plate\":\"").append(escapeJson(insn.plateComment)).append("\"")
+            }
+            if (insn.postComment != null) {
+                sb.append(",\"post\":\"").append(escapeJson(insn.postComment)).append("\"")
+            }
+            sb.append("}")
+        }
+        sb.append("]")
+
+        if (emitted.isEmpty()) {
+            sb.append(",\"empty\":true")
+            if (addressAfter != null && skippedByFilter > 0) {
+                sb.append(",\"reason\":\"all ").append(skippedByFilter).append(" instructions at or before addressAfter")
+            } else {
+                sb.append(",\"reason\":\"no instructions in range")
+            }
+            sb.append("\"")
+        }
+
+        sb.append("}")
+        appendLine(sb.toString())
+    }
+
+    private fun escapeJson(s: String): String {
+        return s.replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+    }
+
+    // ── Text output (original format) ──────────────────────────────────────
+    private fun emitText(
+        resolved: RangeInfo,
+        emitted: List<InsnData>,
+        totalInstrs: Int,
+        firstEmittedIdx: Int,
+        lastEmittedIdx: Int,
+        lastEmittedAddrPre: Address?,
+        lastEmittedAddr: Address?,
+        addressAfter: Address?,
+        skippedByFilter: Int,
+        showComments: Boolean
+    ) {
+        appendLine("; Disassembly: ${resolved.label}")
+        if (totalInstrs > 0 && firstEmittedIdx > 0) {
+            appendLine("; Function: $totalInstrs instructions total - showing #$firstEmittedIdx to #$lastEmittedIdx of $totalInstrs" +
+                (if (addressAfter != null) " (resuming after $addressAfter)" else ""))
+            val remaining = totalInstrs - lastEmittedIdx
+            if (remaining > 0 && lastEmittedAddrPre != null) {
+                appendLine("; >>> $remaining more instructions after this batch - to continue, re-run disassemble_function with addressAfter=$lastEmittedAddrPre")
+            }
+        } else if (addressAfter != null) {
+            appendLine("; Resuming from instructions strictly after $addressAfter")
+        }
+        appendLine("")
+
+        for (insn in emitted) {
             if (showComments) {
-                insn.getComment(CommentType.POST)?.lineSequence()?.forEach { line -> appendLine("    ; $line") }
+                insn.plateComment?.lineSequence()?.forEach { line -> appendLine("    ; $line") }
+                insn.preComment?.lineSequence()?.forEach { line -> appendLine("    ; $line") }
             }
 
-            lastEmittedAddr = insn.address
-            count++
+            val bytesStr = if (insn.bytes != null) insn.bytes.padEnd(24) else ""
+            val eol = if (insn.eolComment != null) "  ; $insn.eolComment" else ""
+            appendLine(if (insn.bytes != null) "${insn.address}  $bytesStr  ${insn.asm}$eol" else "${insn.address}  ${insn.asm}$eol")
+
+            if (showComments) {
+                insn.postComment?.lineSequence()?.forEach { line -> appendLine("    ; $line") }
+            }
         }
 
         appendLine("")
-        if (count == 0) {
+        if (emitted.isEmpty()) {
             if (addressAfter != null && skippedByFilter > 0) {
                 appendLine("; (no instructions emitted — all $skippedByFilter at or before addressAfter)")
             } else {
                 appendLine("; (no instructions found in range)")
             }
         } else {
-            appendLine("; Total instructions emitted: $count" +
+            appendLine("; Total instructions emitted: ${emitted.size}" +
                 if (skippedByFilter > 0) " (skipped $skippedByFilter before addressAfter)" else "")
             if (lastEmittedAddr != null) {
-                // Only suggest resuming when we actually know there are
-                // more instructions in the function (totalInstrs == 0
-                // means unknown, e.g. force mode — be conservative and
-                // still show the hint).
                 val hasMore = totalInstrs == 0 || lastEmittedIdx < totalInstrs
                 appendLine("; Last emitted address: $lastEmittedAddr" +
                     (if (addressAfter == null && hasMore) "  (pass as 'addressAfter' to resume)" else ""))
@@ -272,6 +387,19 @@ class DisassembleFunction : AkibaScript() {
         }
         if (func == null) {
             appendLine("Error: function '$target' not found")
+            val api = ghidra.program.flatapi.FlatProgramAPI(program!!)
+            val addr = try { af.getAddress(target) } catch (_: Exception) { null }
+            if (addr != null) {
+                val beforeFunc = api.getFunctionBefore(addr)
+                val afterFunc = api.getFunctionAfter(addr)
+                if (beforeFunc == null && afterFunc == null) {
+                    appendLine("  No functions found near $addr.")
+                } else {
+                    appendLine("  Nearest functions around $addr:")
+                    appendLine("    Before: ${beforeFunc?.name ?: "(none)"} @ ${beforeFunc?.body?.minAddress} - ${beforeFunc?.body?.maxAddress}")
+                    appendLine("    After:  ${afterFunc?.name ?: "(none)"} @ ${afterFunc?.body?.minAddress} - ${afterFunc?.body?.maxAddress}")
+                }
+            }
             return null
         }
         appendLine("; Function: ${func.name} @ ${func.entryPoint}")
@@ -285,7 +413,6 @@ class DisassembleFunction : AkibaScript() {
                               force: Boolean): RangeInfo? {
         if (force) return RangeInfo(start, end, "range $start - $end (forced)")
 
-        // Overlapping functions using AddressSet
         val range = AddressSet(start, end)
         val bodyIter = fm.getFunctionsOverlapping(range)
         val funcs = mutableSetOf<String>()
@@ -293,6 +420,16 @@ class DisassembleFunction : AkibaScript() {
 
         if (funcs.isEmpty()) {
             appendLine("Error: address range [$start - $end] does not belong to any function.")
+            val api = ghidra.program.flatapi.FlatProgramAPI(program!!)
+            val beforeFunc = api.getFunctionBefore(start)
+            val afterFunc = api.getFunctionAfter(start)
+            if (beforeFunc == null && afterFunc == null) {
+                appendLine("  No functions found near $start.")
+            } else {
+                appendLine("  Nearest functions around $start:")
+                appendLine("    Before: ${beforeFunc?.name ?: "(none)"} @ ${beforeFunc?.body?.minAddress} - ${beforeFunc?.body?.maxAddress}")
+                appendLine("    After:  ${afterFunc?.name ?: "(none)"} @ ${afterFunc?.body?.minAddress} - ${afterFunc?.body?.maxAddress}")
+            }
             appendLine("  To disassemble outside function bodies, pass force=true.")
             return null
         }

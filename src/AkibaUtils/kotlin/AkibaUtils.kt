@@ -38,7 +38,7 @@ import java.time.Duration
  * than here, so adding a new helper does NOT require editing this
  * file. See [WithScriptFile] for the format.
  */
-@WithBundledSkills(["skills/binary-vuln-audit/"])
+@WithBundledSkills(["skills/binary-vuln-audit/", "skills/long-function-analysis/"])
 @WithScriptFile(
     [
         "script_library/binary_info.kts",
@@ -56,11 +56,14 @@ import java.time.Duration
         "script_library/list_memory_segments.kts",
         "script_library/manage_func_signature.kts",
         "script_library/manage_data_type.kts",
+        "script_library/manage_func_vars.kts",
         "script_library/define_undefine_data.kts",
         "script_library/disassemble_and_create_function.kts",
         "script_library/write_memory.kts",
         "script_library/search_memory.kts",
         "script_library/find_data_type_refs.kts",
+        "script_library/export_function_analysis.kts",
+        "script_library/run_angr_script.kts"
     ],
     author = "Akiba",
 )
@@ -153,6 +156,22 @@ class AkibaUtils(
     private suspend fun runManualAgentTurn() {
         val start = requestManualAgentStart()
         installBundledSkillsForUser(start.username)
+
+        // ---- Publish the sessionId / agent on `this` so tool helpers can
+        // ---- find them.  The framework's regular `startProcess` would have
+        // done this in a non-manual-agent run, but the manual-agent flow
+        // bypasses `super.startProcess()` entirely, so we have to wire the
+        // identifiers ourselves.
+        //
+        // Without `this.agentSessionId` set, every tool that asks for
+        // `(parent as? AgentModule)?.agentSessionId` (notably
+        // `confirmFileAccess` in `WorkspaceFileTools` and
+        // `RunShellTool`) returns null and auto-denies the access —
+        // which means the `read_workspace_file` / `write_workspace_file`
+        // confirmation modal never appears for absolute paths and the
+        // user has no way to approve them.
+        agentSessionId = start.sessionId
+
         val agentDbClient = AgentDatabaseClient(dbClient)
         val llmConfig = ConfigManager.llmConf?.takeIf { it.isConfigured }?.toLLMConfig()
             ?: throw IllegalStateException("Manual agent worker requires llm config")
@@ -163,29 +182,35 @@ class AkibaUtils(
         // is passed via the manual-agent handshake.  For binary-based
         // sessions, AkibaModule.program was already set at construction.
         if (program == null) {
-            val programName = start.programName
-            if (programName != null) {
-                logger.info("AkibaUtils: opening program '$programName' for manual agent turn")
+            val programPath = start.programName
+            if (programPath != null) {
+                logger.info("AkibaUtils: opening program '$programPath' for manual agent turn")
                 try {
-                    program = WorkspaceManager.project.openProgram("/", programName, false)
+                    // programPath is a full project pathname produced
+                    // by the recursive server-side lookup ("/dir/prog",
+                    // or "/prog" for root-level files).  Split into
+                    // folder + name for openProgram.
+                    val folder = programPath.substringBeforeLast('/', "").ifEmpty { "/" }
+                    val progName = programPath.substringAfterLast('/')
+                    program = WorkspaceManager.project.openProgram(folder, progName, false)
                 } catch (e: Exception) {
-                    logger.error("AkibaUtils: failed to open program '$programName': ${e.message}", e)
+                    logger.error("AkibaUtils: failed to open program '$programPath': ${e.message}", e)
                 }
             }
             if (program == null) {
-                // Fallback: auto-open the first program in the project root folder.
+                // Fallback: recursively auto-open the first program
+                // found anywhere in the project (subfolders included —
+                // a root-only scan misses organised projects).
                 try {
                     val project = WorkspaceManager.project
                     project.projectData.refresh(true)
-                    val firstProgram = project.projectData.rootFolder.files.firstOrNull { f ->
-                        val doc = f.domainObjectClass
-                        doc != null && ghidra.program.model.listing.Program::class.java.isAssignableFrom(doc)
-                    }
+                    val firstProgram = findFirstProgramFile(project.projectData.rootFolder)
                     if (firstProgram != null) {
-                        logger.info("AkibaUtils: auto-opening first program '${firstProgram.name}'")
-                        program = project.openProgram("/", firstProgram.name, false)
+                        logger.info("AkibaUtils: auto-opening first program '${firstProgram.pathname}'")
+                        val folder = firstProgram.pathname.substringBeforeLast('/', "").ifEmpty { "/" }
+                        program = project.openProgram(folder, firstProgram.name, false)
                     } else {
-                        logger.error("AkibaUtils: no program found in project root folder")
+                        logger.error("AkibaUtils: no program found anywhere in the project")
                     }
                 } catch (e: Exception) {
                     logger.error("AkibaUtils: failed to auto-open program: ${e.message}", e)
@@ -212,6 +237,14 @@ class AkibaUtils(
             maxIterations(20)
         }
 
+        // ---- Publish the AkibaAgent on `this` so tools that read
+        // ---- `parent.agent` (e.g. `spawn_sub_agent`,
+        // ---- `agent_builder_alternatives`) can find it.  The framework's
+        // ---- regular `startProcess` would have done this in a
+        // ---- non-manual-agent run, but the manual-agent flow bypasses
+        // ---- `super.startProcess()` entirely.
+        this.agent = agent
+
         try {
             val result = agent.run(start.content)
             val status = when (result.stopReason.name) {
@@ -234,6 +267,21 @@ class AkibaUtils(
             }
             throw e
         }
+    }
+
+    /** Recursively find the first Ghidra Program file in a project
+     *  folder tree (subfolders included). */
+    private fun findFirstProgramFile(
+        folder: ghidra.framework.model.DomainFolder
+    ): ghidra.framework.model.DomainFile? {
+        folder.files.firstOrNull { f ->
+            val doc = f.domainObjectClass
+            doc != null && ghidra.program.model.listing.Program::class.java.isAssignableFrom(doc)
+        }?.let { return it }
+        for (sub in folder.folders) {
+            findFirstProgramFile(sub)?.let { return it }
+        }
+        return null
     }
 
     private fun requestManualAgentStart(): ManualAgentStartResponse {
