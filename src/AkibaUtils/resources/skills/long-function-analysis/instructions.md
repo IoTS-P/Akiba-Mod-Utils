@@ -118,58 +118,13 @@ Use `vuln_memory` to record any vulnerabilities found, and `set_get_comment` to 
 AKIBA: role=<purpose>; status=<clean|candidate|confirmed>; analysis=exported; files=functions/<addr>_<name>/
 ```
 
-## Data-flow and control-flow verification with angr
+## Data-flow and control-flow verification
 
-**Data-flow and control-flow analysis MUST be confirmed using angr scripts.** Ghidra's decompiler and disassembler provide a static view that can be inaccurate — especially for complex control flow (switch tables, indirect jumps), pointer aliasing, and taint propagation. When your analysis depends on data-flow or control-flow conclusions (e.g. "this buffer size is attacker-controlled", "this branch is reachable", "this pointer always points to struct X"), write an angr script to confirm the result before recording it.
+**Data-flow and control-flow conclusions MUST be verified against the actual assembly before recording them.** Ghidra's decompiler provides a static approximation that can be inaccurate — especially for complex control flow (switch tables, indirect jumps), pointer aliasing, and value propagation. When your analysis depends on such a conclusion (e.g. "this buffer size is attacker-controlled", "this branch is reachable", "this pointer always points to struct X"):
 
-### Quick start: use a template
-
-This skill includes pre-written angr templates for common analysis tasks. Instead of writing an angr script from scratch, copy the relevant template, fill in the function address and parameters, and run it:
-
-| Template file | Purpose |
-|---------------|---------|
-| `angr_templates/reachability.py` | Check whether a specific basic block / error path is reachable from the function entry |
-| `angr_templates/taint_propagation.py` | Trace whether a value at a given address is influenced by user-controlled input (register/argument) |
-| `angr_templates/switch_table.py` | Reconstruct a switch jump table that Ghidra failed to decode, enumerating all cases |
-| `angr_templates/buffer_constraint.py` | Check whether a size variable can exceed a buffer's allocated length (constraint satisfiability) |
-
-**Usage:**
-
-1. Read the template to understand its structure:
-```
-read_workspace_file {"path": "angr_templates/reachability.py"}
-```
-
-2. Copy it to your function's workspace directory and fill in the parameters:
-```
-write_workspace_file {"path": "functions/<addr>_<name>/angr_check.py", "content": "# ... (copy template, fill in <FUNC_ADDR>, <TARGET_ADDR>, etc.)"}
-```
-
-3. Run it:
-```
-script_library action=run scriptName=run_angr_script parameters={"scriptPath":"functions/<addr>_<name>/angr_check.py","timeout":180}
-```
-
-### How to run angr scripts
-
-The `run_angr_script` tool runs a Python script in a managed virtual environment (`~/.akiba/venv`, auto-created with angr pre-installed). The binary's absolute path is passed via the **`AKIBA_BINARY_PATH`** environment variable — your Python script reads it with `os.environ["AKIBA_BINARY_PATH"]`.
-
-### When to use angr
-
-| Scenario | Template | Why angr helps |
-|----------|----------|----------------|
-| **Reachability** — "is this error-handling branch reachable from the entry point?" | `reachability.py` | angr can explore paths and confirm whether a given basic block is reachable under realistic constraints. |
-| **Taint propagation** — "is this value influenced by user input?" | `taint_propagation.py` | angr's symbolic execution tracks data flow through registers/memory that Ghidra's decompiler may not represent accurately. |
-| **Switch table reconstruction** — Ghidra shows `if-else` chains or computed `goto` | `switch_table.py` | angr resolves the jump table and enumerates all cases, confirming Ghidra's reconstruction (or revealing missing cases). |
-| **Buffer size constraints** — "can `size` exceed the buffer length?" | `buffer_constraint.py` | angr can model the constraint and check satisfiability, proving whether an overflow is reachable. |
-
-### Important notes for angr usage
-
-- **First run is slow** — angr installation can take 3-5 minutes on the first invocation. Subsequent runs are fast.
-- **Use `auto_load_libs=False`** — loading shared libraries slows angr dramatically and is usually unnecessary for vulnerability analysis.
-- **Set a realistic timeout** — symbolic execution can be slow. Use the `timeout` parameter (default 120s, max 600s). Start with 180s for non-trivial analyses.
-- **Write results to the workspace** — your angr script can write findings to files (e.g. `functions/<addr>_<name>/angr_results.json`) that other agents can read later.
-- **angr works on the raw binary, not Ghidra's model** — address spaces and function boundaries may differ slightly from what Ghidra shows. Cross-reference using Ghidra's image base if needed.
+1. Locate the relevant C statement in `mapping.json` and get its `asmAddrs`.
+2. Read those instructions in `disasm.txt` and trace the value/branch manually through the surrounding basic blocks (use `grep_workspace` on `disasm.txt` to follow register definitions and xrefs).
+3. Only record the conclusion once the assembly-level trace supports it; otherwise mark it as unverified in your findings.
 
 ## Important notes
 

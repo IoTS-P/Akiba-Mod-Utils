@@ -1,7 +1,7 @@
 {
   "id": "long-function-analysis",
   "name": "Long Function Analysis",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Pseudo-C-first analysis workflow for large functions (>200 instructions) where disassembly cannot fit in a single tool call. Exports full analysis packages (disasm + decomp + C↔assembly mapping) to the workspace.",
   "entry": "instructions.md",
   "tags": ["long-function", "decompilation", "pseudo-c", "assembly-mapping"],
@@ -13,12 +13,8 @@
     "pseudo-C",
     "export_function_analysis"
   ],
-  "requiredTools": ["script_library", "read_workspace_file", "write_workspace_file", "grep_workspace", "run_angr_script"],
+  "requiredTools": ["script_library", "read_workspace_file", "write_workspace_file", "grep_workspace"],
   "files": [
-    {"path": "instructions.md", "description": "Complete workflow: export, read pseudo-C, verify against assembly, fix variables, reconstruct"},
-    {"path": "angr_templates/reachability.py", "description": "angr template: check whether a target basic block is reachable from the function entry"},
-    {"path": "angr_templates/taint_propagation.py", "description": "angr template: trace whether a value is influenced by user-controlled input"},
-    {"path": "angr_templates/switch_table.py", "description": "angr template: reconstruct a switch jump table and enumerate all cases"},
-    {"path": "angr_templates/buffer_constraint.py", "description": "angr template: check whether a size variable can exceed a buffer's allocated length"}
+    {"path": "instructions.md", "description": "Complete workflow: export, read pseudo-C, verify against assembly, fix variables, reconstruct"}
   ]
 }

@@ -63,7 +63,7 @@ import java.time.Duration
         "script_library/search_memory.kts",
         "script_library/find_data_type_refs.kts",
         "script_library/export_function_analysis.kts",
-        "script_library/run_angr_script.kts"
+        "script_library/emulate.kts"
     ],
     author = "Akiba",
 )
