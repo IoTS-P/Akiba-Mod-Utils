@@ -333,64 +333,152 @@ class ManageFuncVars : AkibaScript() {
 
     /**
      * Find a base (non-pointer, non-array) type by name in the DTM.
-     * Handles common aliases and built-in types.
+     *
+     * Strategy:
+     * 1. Search the program DTM by path and category (handles user-defined types)
+     * 2. Use Ghidra built-in static instances + dtm.resolve() (handles primitive types)
+     * 3. Dynamically create POSIX typedefs (size_t, ssize_t, etc.)
+     *
+     * Note: Ghidra's built-in types (uint, ulong, etc.) are NOT reliably
+     * findable via getDataType(CategoryPath.ROOT, name) because they live in
+     * a separate built-in table, not the regular category tree.  The most
+     * reliable way to get them into the program DTM is via their static
+     * `dataType` instances resolved through [DataTypeManager.resolve].
      */
     private fun findBaseType(
         dtm: ghidra.program.model.data.DataTypeManager,
         name: String
     ): DataType? {
-        // Try root category first
-        dtm.getDataType(CategoryPath.ROOT, name)?.let { return it }
+        val trimmed = name.trim()
 
-        // Search all categories
-        searchCategory(dtm.rootCategory, name)?.let { return it }
+        // ── Step 1: Search the program DTM (user-defined types) ──
+        dtm.getDataType("/" + trimmed)?.let { return it }
+        dtm.getDataType(CategoryPath.ROOT, trimmed)?.let { return it }
+        searchCategory(dtm.rootCategory, trimmed)?.let { return it }
 
-        // ── Built-in type aliases ──
-        // Ghidra's built-in types may use different names than what the LLM
-        // (trained on C code) expects.  Map common aliases.
-        val alias = when (name.lowercase()) {
-            "byte" -> "byte"           // Ghidra built-in
-            "char" -> "char"
-            "uchar", "unsigned char" -> "uchar"
-            "short" -> "short"
-            "ushort", "unsigned short" -> "ushort"
-            "int" -> "int"
-            "uint", "unsigned int", "unsigned" -> "uint"
-            "long" -> "long"
-            "ulong", "unsigned long" -> "ulong"
-            "longlong", "long long" -> "longlong"
-            "ulonglong", "unsigned long long" -> "ulonglong"
-            "float" -> "float"
-            "double" -> "double"
-            "void" -> return ghidra.program.model.data.VoidDataType.dataType
-            "size_t" -> "size_t"       // may exist in some programs
-            "ssize_t" -> "ssize_t"
-            "bool" -> "bool"
-            "_bool", "_bool" -> "bool"
-            "int8", "int8_t" -> "int8"
-            "uint8", "uint8_t" -> "uint8"
-            "int16", "int16_t" -> "int16"
-            "uint16", "uint16_t" -> "uint16"
-            "int32", "int32_t" -> "int32"
-            "uint32", "uint32_t" -> "uint32"
-            "int64", "int64_t" -> "int64"
-            "uint64", "uint64_t" -> "uint64"
+        // ── Step 2: Resolve Ghidra built-in static instances ──
+        // Built-in types like uint, ulong, ulonglong have static instances
+        // on their classes.  resolve() copies them into the program DTM.
+        val builtIn = getGhidraBuiltInInstance(trimmed)
+        if (builtIn != null) {
+            return try {
+                dtm.resolve(builtIn, ghidra.program.model.data.DataTypeConflictHandler.REPLACE_HANDLER)
+            } catch (e: Exception) {
+                null
+            }
+        }
+
+        // ── Step 3: Dynamic typedef creation ──
+        return createTypedefIfNeeded(dtm, trimmed)
+    }
+
+    /**
+     * Map a C type name to a Ghidra built-in [DataType] static instance.
+     *
+     * Ghidra's built-in types are singletons on their respective classes
+     * (e.g. `UnsignedIntegerDataType.dataType`).  Resolving them via
+     * [DataTypeManager.resolve] ensures they are properly registered in the
+     * program DTM and share the same DataOrganization (pointer sizes, etc.).
+     *
+     * Returns null if the name is not a recognized C built-in type.
+     */
+    private fun getGhidraBuiltInInstance(name: String): DataType? {
+        return when (name.lowercase().trim()) {
+            // ── Signed integers ──
+            "byte" -> ghidra.program.model.data.ByteDataType.dataType
+            "char" -> ghidra.program.model.data.CharDataType.dataType
+            "short" -> ghidra.program.model.data.ShortDataType.dataType
+            "int" -> ghidra.program.model.data.IntegerDataType.dataType
+            "long" -> ghidra.program.model.data.LongDataType.dataType
+            "longlong", "long long" -> ghidra.program.model.data.LongLongDataType.dataType
+
+            // ── Unsigned integers ──
+            "unsigned char", "uchar" -> ghidra.program.model.data.UnsignedCharDataType.dataType
+            "unsigned short", "ushort" -> ghidra.program.model.data.UnsignedShortDataType.dataType
+            "unsigned int", "uint", "unsigned" -> ghidra.program.model.data.UnsignedIntegerDataType.dataType
+            "unsigned long", "ulong" -> ghidra.program.model.data.UnsignedLongDataType.dataType
+            "unsigned long long", "ulonglong" -> ghidra.program.model.data.UnsignedLongLongDataType.dataType
+
+            // ── Word-sized types (Ghidra specific) ──
+            "word" -> ghidra.program.model.data.WordDataType.dataType
+            "dword" -> ghidra.program.model.data.DWordDataType.dataType
+            "qword" -> ghidra.program.model.data.QWordDataType.dataType
+
+            // ── Floating point ──
+            "float" -> ghidra.program.model.data.FloatDataType.dataType
+            "double" -> ghidra.program.model.data.DoubleDataType.dataType
+            "longdouble", "long double" -> ghidra.program.model.data.LongDoubleDataType.dataType
+
+            // ── Boolean ──
+            "bool", "_bool", "boolean" -> ghidra.program.model.data.BooleanDataType.dataType
+
+            // ── Void ──
+            "void" -> ghidra.program.model.data.VoidDataType.dataType
+
+            // ── C99 stdint.h types → map to Ghidra equivalents ──
+            "int8", "int8_t" -> ghidra.program.model.data.ByteDataType.dataType       // signed 8-bit
+            "int16", "int16_t" -> ghidra.program.model.data.ShortDataType.dataType    // signed 16-bit
+            "int32", "int32_t" -> ghidra.program.model.data.IntegerDataType.dataType  // signed 32-bit
+            "int64", "int64_t" -> ghidra.program.model.data.LongLongDataType.dataType // signed 64-bit
+
+            "uint8", "uint8_t" -> ghidra.program.model.data.UnsignedCharDataType.dataType       // unsigned 8-bit
+            "uint16", "uint16_t" -> ghidra.program.model.data.UnsignedShortDataType.dataType    // unsigned 16-bit
+            "uint32", "uint32_t" -> ghidra.program.model.data.UnsignedIntegerDataType.dataType  // unsigned 32-bit
+            "uint64", "uint64_t" -> ghidra.program.model.data.UnsignedLongLongDataType.dataType // unsigned 64-bit
+
+            // ── POSIX types (not Ghidra built-ins, need dynamic typedef) ──
+            "size_t", "ssize_t", "ptrdiff_t", "intptr_t", "uintptr_t" -> null
+
             else -> null
         }
+    }
 
-        if (alias != null && alias != name.lowercase()) {
-            dtm.getDataType(CategoryPath.ROOT, alias)?.let { return it }
-            searchCategory(dtm.rootCategory, alias)?.let { return it }
+    /**
+     * Create a typedef for a C standard type if it doesn't exist in the DTM.
+     * This handles types like size_t, ssize_t, ptrdiff_t, intptr_t, uintptr_t
+     * which are not Ghidra built-ins but are commonly used in C code.
+     *
+     * The base type is chosen based on the program's pointer size:
+     * - 64-bit program: size_t = unsigned long (8 bytes)
+     * - 32-bit program: size_t = unsigned int (4 bytes)
+     */
+    private fun createTypedefIfNeeded(
+        dtm: ghidra.program.model.data.DataTypeManager,
+        name: String
+    ): DataType? {
+        val lowerName = name.lowercase().trim()
+
+        // Determine the base type based on program pointer size
+        val pointerSize = program?.defaultPointerSize ?: 8
+        val baseType = when (lowerName) {
+            "size_t" -> if (pointerSize == 8) ghidra.program.model.data.UnsignedLongDataType.dataType
+                        else ghidra.program.model.data.UnsignedIntegerDataType.dataType
+            "ssize_t" -> if (pointerSize == 8) ghidra.program.model.data.LongDataType.dataType
+                         else ghidra.program.model.data.IntegerDataType.dataType
+            "ptrdiff_t" -> if (pointerSize == 8) ghidra.program.model.data.LongDataType.dataType
+                           else ghidra.program.model.data.IntegerDataType.dataType
+            "intptr_t" -> if (pointerSize == 8) ghidra.program.model.data.LongDataType.dataType
+                          else ghidra.program.model.data.IntegerDataType.dataType
+            "uintptr_t" -> if (pointerSize == 8) ghidra.program.model.data.UnsignedLongDataType.dataType
+                           else ghidra.program.model.data.UnsignedIntegerDataType.dataType
+            else -> return null
         }
 
-        // Try with C stdint names that Ghidra uses (e.g. "int8" not "int8_t")
-        if (name.endsWith("_t")) {
-            val withoutT = name.dropLast(2)  // "uint8_t" -> "uint8"
-            dtm.getDataType(CategoryPath.ROOT, withoutT)?.let { return it }
-            searchCategory(dtm.rootCategory, withoutT)?.let { return it }
+        // Resolve the base type into the program DTM first
+        val resolvedBase = try {
+            dtm.resolve(baseType, ghidra.program.model.data.DataTypeConflictHandler.REPLACE_HANDLER)
+        } catch (e: Exception) {
+            return null
         }
 
-        return null
+        // Create the typedef
+        return try {
+            val typedef = ghidra.program.model.data.TypedefDataType(name, resolvedBase)
+            dtm.addDataType(typedef, ghidra.program.model.data.DataTypeConflictHandler.REPLACE_HANDLER)
+        } catch (e: Exception) {
+            // Typedef may already exist or creation failed
+            null
+        }
     }
 
     private fun searchCategory(

@@ -1,7 +1,7 @@
 // @name: set_get_comment
 // @author: Akiba
-// @description: Add, update, clear, or read comments at a listing address, function, or symbol. Supports all five Ghidra comment types (EOL, PRE, POST, PLATE, REPEATABLE) via the new CommentType API. Pass action="read" to inspect comments; pass an empty string to clear the selected comment type. NOTE: Function-entry AKIBA: analysis notes MUST use type=PLATE (not PRE) — the harness only checks PLATE comments.
-// @parameters: address (string) - Hex address, function name, or symbol where the comment is attached (e.g. "0x401000" or "main"); action (string, optional) - "write" or "read" (default: "write"); type (string, optional) - One of "EOL", "PRE", "POST", "PLATE", "REPEATABLE", or "ALL" for read mode (default: "EOL", case-insensitive). For function-entry AKIBA: notes, always use "PLATE"; comment (string, required for action=write) - Comment text. Multi-line comments are supported. Empty string clears the existing comment of that type; append (boolean, optional) - If true and a comment of this type already exists, append the new text on a new line instead of replacing (default: false)
+// @description: Add, update, clear, or read comments at a listing address, function, or symbol. Supports all five Ghidra comment types (EOL, PRE, POST, PLATE, REPEATABLE) via the new CommentType API. Pass action="read" to inspect comments; pass an empty string to clear the selected comment type. Writes default to type=PLATE so function-entry AKIBA: analysis notes land where the harness looks for them; pass type=EOL explicitly for free-form instruction-level notes.
+// @parameters: address (string) - Hex address, function name, or symbol where the comment is attached (e.g. "0x401000" or "main"); action (string, optional) - "write" or "read" (default: "write"); type (string, optional) - One of "EOL", "PRE", "POST", "PLATE", "REPEATABLE", or "ALL" (case-insensitive). Default: "PLATE" for action=write, "ALL" for action=read. Use "EOL" explicitly for instruction-level observations; keep function-entry AKIBA: notes on "PLATE"; comment (string, required for action=write) - Comment text. Multi-line comments are supported. Empty string clears the existing comment of that type; append (boolean, optional) - If true and a comment of this type already exists, append the new text on a new line instead of replacing (default: false)
 // @dedup: args_only
 
 import org.iotsplab.akiba.script.AkibaScript
@@ -16,7 +16,13 @@ class SetGetComment : AkibaScript() {
             ?: run { appendLine("Error: 'address' parameter is required (hex address, function name, or symbol)"); return }
         val addressStr = targetArg.toString()
         val action = ((scriptArgs["action"] as? String) ?: "write").lowercase()
-        val typeStr = (scriptArgs["type"] as? String)?.uppercase() ?: "EOL"
+        // Defaults: PLATE for writes (function-entry notes, incl. AKIBA:
+        // analysis records, are the common case and the harness only
+        // recognises PLATE), ALL for reads so verification never misses
+        // a comment stored under a different type.  Callers wanting a
+        // free-form instruction-level note pass type=EOL explicitly.
+        val typeStr = (scriptArgs["type"] as? String)?.uppercase()
+            ?: if (action == "read") "ALL" else "PLATE"
         val append = (scriptArgs["append"] as? Boolean) ?: false
 
         // Map the user-friendly string to the new CommentType enum. We accept

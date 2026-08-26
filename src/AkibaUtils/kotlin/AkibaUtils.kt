@@ -247,11 +247,20 @@ class AkibaUtils(
 
         try {
             val result = agent.run(start.content)
-            val status = when (result.stopReason.name) {
-                "COMPLETED" -> "active"
-                else -> "error"
+            // Runtime-state model: a finished turn parks the session at
+            // "closed" (the /chat route flips it back to "running" at the
+            // start of the next turn).  Do NOT use the legacy "active"
+            // status — the daemon's UpdateSession rejects it since the
+            // runtime-state migration, which used to turn every
+            // successful manual chat turn into a trailing 400 error.
+            val state = when (result.stopReason.name) {
+                "COMPLETED" -> org.iotsplab.akiba.llm.agent.RuntimeState.CLOSED
+                else -> org.iotsplab.akiba.llm.agent.RuntimeState.ERROR
             }
-            agentDbClient.updateSession(start.sessionId, status = status)
+            agentDbClient.setRuntimeState(
+                start.sessionId, state.wire(),
+                "manual_chat_turn_${result.stopReason.name.lowercase()}"
+            )
             logger.info("AkibaUtils: manual agent turn completed, stopReason=${result.stopReason}")
         } catch (e: Exception) {
             logger.error("AkibaUtils: manual agent turn failed: ${e.message}")
@@ -263,9 +272,26 @@ class AkibaUtils(
                         content = "Manual agent worker failed: ${e.message ?: e.javaClass.name}"
                     ))
                 )
-                agentDbClient.updateSession(start.sessionId, status = "error")
+                agentDbClient.setRuntimeState(
+                    start.sessionId,
+                    org.iotsplab.akiba.llm.agent.RuntimeState.ERROR.wire(),
+                    "manual_chat_turn_exception"
+                )
             }
             throw e
+        } finally {
+            // Flush queued cross-process stream chunks before this
+            // worker JVM exits.  The chunk sender thread is a daemon,
+            // so without this drain the response TAIL and the `done`
+            // marker can be discarded at process exit — the browser's
+            // streaming bubble then freezes mid-text and stalls on
+            // "waiting for model…" even though the turn completed.
+            // (The framework's module path does the same drain in
+            // AkibaModule.startProcess; the manual-agent flow bypasses
+            // that path entirely, so it must flush here.)
+            runCatching {
+                org.iotsplab.akiba.llm.agent.StreamingChunkPusher.awaitQuiescence(3_000)
+            }
         }
     }
 
