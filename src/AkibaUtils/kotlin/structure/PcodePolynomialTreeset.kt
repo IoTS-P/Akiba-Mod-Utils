@@ -20,17 +20,15 @@ class PcodePolynomialTreeset {
     private val trees: MutableList<PcodePolynomialTree> = mutableListOf()
 
     /**
-     * 将 P-code 操作添加到 treeset，自动构建或更新多项式树。
-     * 处理 varnode 同时作为输入和输出的复杂情况。
+     * Adds a P-code op, building or updating the polynomial tree it belongs to.
+     * Input varnodes with no tree get a fresh one; for the output varnode an
+     * existing tree has its expressions replaced, otherwise a new tree merges the
+     * dependency subtrees. Inputs are registered before the output tree is
+     * resolved, which covers ops like `xxx INT_ADD xxx, yyy` where one varnode
+     * appears on both sides.
      *
-     * 此方法执行以下步骤：
-     * 1. 为没有现有表示的输入 varnode 创建新树。
-     * 2. 检查输出 varnode 的树是否已存在：
-     *    - 如果存在：删除旧表达式并用新操作替换。
-     *    - 如果不存在：创建新树并合并依赖的子树。
-     *
-     * @param op 要添加的 P-code 操作。
-     * @throws IllegalArgumentException 如果无法处理该操作则抛出此异常。
+     * @param op the P-code op to add.
+     * @throws IllegalArgumentException if the op cannot be handled.
      */
     @Throws(IllegalArgumentException::class)
     fun addPcode(op: PcodeOp) {

@@ -3,20 +3,11 @@ package org.iotsplab.akiba.module
 /**
  * Configuration for AkibaUtils text-export mode.
  *
- * When AkibaUtils receives a [TextExportConfig] as its module config
- * (via `@WithConfigClass`), [startProcess] enters export mode instead
- * of the normal script-seeding flow: it enumerates every program in
- * the project, renders the requested content (listing, comments, data,
- * decompiled C) and writes the result to the module workspace.
- *
- * The framework's `--export` CLI flag creates a config file whose
- * `textExport` key is deserialized into this class, so all export
- * options flow through the standard module-config pipeline — no
- * environment variables needed.
- *
- * Field defaults match `ProjectTextExportRequest` in the framework's
- * `ProjectRoutes.kt` so the server can serialize a request body
- * directly into a config-file section.
+ * [startProcess] enters export mode instead of script seeding when this config is
+ * supplied via `@WithConfigClass`; the `--export` CLI flag produces it, so options
+ * flow through the standard module-config pipeline with no environment variables.
+ * Field defaults match `ProjectTextExportRequest` so the server can serialize a
+ * request body straight into a config-file section.
  */
 data class TextExportConfig(
     /** Which content sections to emit: listing, comments, functions, data, decompile. */

@@ -4,13 +4,13 @@ import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
 import org.apache.logging.log4j.Level
 import org.iotsplab.akiba.data.database.AgentDatabaseClient
-import org.iotsplab.akiba.llm.agent.AgentModule
+import org.iotsplab.akiba.llm.agent.module.AgentModule
 import ghidra.program.model.listing.Program
 import org.iotsplab.akiba.utils.WithBundledSkills
 import org.iotsplab.akiba.utils.WithScriptFile
-import org.iotsplab.akiba.llm.agent.akibaAgent
+import org.iotsplab.akiba.llm.agent.builder.akibaAgent
 import org.iotsplab.akiba.llm.memory.persistentChatMemory
-import org.iotsplab.akiba.llm.tool.BuiltInTools
+import org.iotsplab.akiba.llm.tool.core.BuiltInTools
 import org.iotsplab.akiba.managers.ConfigManager
 import org.iotsplab.akiba.utils.DoNotCreateTable
 import org.iotsplab.akiba.utils.WithConfigClass
@@ -24,19 +24,10 @@ import java.time.Duration
 /**
  * AkibaUtils — the framework's general-purpose script and skill bundle.
  *
- * Historically this module hand-rolled a `seedPresetScripts()` walk over
- * a hard-coded list of `script_library/<file>.kts` files, then called
- * [AgentDatabaseClient.createScript] for each entry. With the v2
- * `WithScriptFile` annotation on [AgentModule], that work is now
- * declarative: every `script_library/<file>.kts` listed in the
- * annotation below is registered automatically by
- * [AgentModule.installAnnotatedBundledScripts] before the agent's
- * first turn runs.
- *
- * Domain-specific scripts (e.g. `group_functions.kts` for
- * VulnDetector) live in the module that owns the workflow rather
- * than here, so adding a new helper does NOT require editing this
- * file. See [WithScriptFile] for the format.
+ * The scripts listed in `@WithScriptFile` below are registered automatically by
+ * [AgentModule.installAnnotatedBundledScripts] before the agent's first turn, so
+ * there is no hand-rolled `seedPresetScripts()` walk. Domain-specific scripts live
+ * in the module that owns the workflow; see [WithScriptFile] for the format.
  */
 @WithBundledSkills(["skills/binary-vuln-audit/", "skills/long-function-analysis/"])
 @WithScriptFile(
@@ -254,8 +245,8 @@ class AkibaUtils(
             // runtime-state migration, which used to turn every
             // successful manual chat turn into a trailing 400 error.
             val state = when (result.stopReason.name) {
-                "COMPLETED" -> org.iotsplab.akiba.llm.agent.RuntimeState.CLOSED
-                else -> org.iotsplab.akiba.llm.agent.RuntimeState.ERROR
+                "COMPLETED" -> org.iotsplab.akiba.llm.agent.runtime.RuntimeState.CLOSED
+                else -> org.iotsplab.akiba.llm.agent.runtime.RuntimeState.ERROR
             }
             agentDbClient.setRuntimeState(
                 start.sessionId, state.wire(),
@@ -274,7 +265,7 @@ class AkibaUtils(
                 )
                 agentDbClient.setRuntimeState(
                     start.sessionId,
-                    org.iotsplab.akiba.llm.agent.RuntimeState.ERROR.wire(),
+                    org.iotsplab.akiba.llm.agent.runtime.RuntimeState.ERROR.wire(),
                     "manual_chat_turn_exception"
                 )
             }
@@ -290,7 +281,7 @@ class AkibaUtils(
             // AkibaModule.startProcess; the manual-agent flow bypasses
             // that path entirely, so it must flush here.)
             runCatching {
-                org.iotsplab.akiba.llm.agent.StreamingChunkPusher.awaitQuiescence(3_000)
+                org.iotsplab.akiba.llm.agent.stream.StreamingChunkPusher.awaitQuiescence(3_000)
             }
         }
     }

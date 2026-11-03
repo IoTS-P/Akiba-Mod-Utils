@@ -3,15 +3,13 @@ package org.iotsplab.akiba.utils.memory
 import ghidra.program.model.address.Address
 
 /**
- * 内存段数据类。
- * 表示一个内存映射区域，包含文件偏移、大小、权限等信息。
- *
- * @param fileOffset 在文件中的偏移量（可选）。
- * @param size 内存段大小。
- * @param mapStart 映射到的起始地址。
- * @param description 内存段描述。
- * @param name 内存段名称。
- * @param prot 保护标志（读、写、执行的组合）。
+ * A memory-mapped region: file offset, size, permissions, name.
+ * @param fileOffset Offset in the file (null when not backed by a file section).
+ * @param size Size of the section.
+ * @param mapStart Start address it is mapped to.
+ * @param description Human-readable description.
+ * @param name Section name.
+ * @param prot Protection flags (a combination of read, write, execute).
  */
 data class MemorySection(
     var fileOffset: Long?,
