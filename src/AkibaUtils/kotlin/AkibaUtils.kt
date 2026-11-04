@@ -208,14 +208,18 @@ class AkibaUtils(
                 }
             }
         }
+        // A chat session started without a binary has no Ghidra program. That
+        // is a supported mode: the turn still runs, but only the tools that do
+        // not touch a program are registered (see [PROGRAM_FREE_TOOLS]).
         if (program == null) {
-            throw IllegalStateException(
-                "AkibaUtils: no Ghidra Program is loaded. Manual agent cannot run scripts " +
-                "without a program. programName from handshake: ${start.programName}"
+            logger.warn(
+                "AkibaUtils: no Ghidra program for this session (programName=${start.programName}) " +
+                    "- running with program-free tools only"
             )
         }
 
-        val toolList = BuiltInTools.all(this, agentDbClient, start.username).filter { it.name != "run_shell" }
+        val allTools = BuiltInTools.all(this, agentDbClient, start.username).filter { it.name != "run_shell" }
+        val toolList = if (program == null) allTools.filter { it.name in PROGRAM_FREE_TOOLS } else allTools
 
         val agent = akibaAgent {
             config(llmConfig)
@@ -314,6 +318,7 @@ class AkibaUtils(
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(body))
             .build()
+        logger.info("requestManualAgentStart: POST http://127.0.0.1:$port/api/agent/internal/manual-turn/start")
         val response = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
             .build()
@@ -334,5 +339,17 @@ class AkibaUtils(
 
     companion object {
         private var scriptSeeded: Boolean = false
+
+        /** Tools that work without a Ghidra program (workspace, history, skills, coordination). */
+        private val PROGRAM_FREE_TOOLS: Set<String> = setOf(
+            "read_workspace_file", "write_workspace_file", "list_workspace_dir",
+            "create_workspace_dir", "move_workspace_file", "delete_workspace_file",
+            "grep_workspace",
+            "query_session_history", "read_history_tool_call", "search_history_tool_calls",
+            "query_memories",
+            "search_skill", "read_skill",
+            "list_sub_agents", "get_agent_status", "await_multiple_children",
+            "ask_user_choice",
+        )
     }
 }
