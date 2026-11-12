@@ -10,7 +10,13 @@ class BinaryInfo : AkibaScript() {
         val prog = program!!
 
         appendLine("=== Binary Information ===")
-        appendLine("Name:        ${prog.name}")
+        // The project entry name is what a rename changes; the program's own
+        // name still carries the name it had when it was imported.
+        val entryName = runCatching { prog.domainFile?.name }.getOrNull()
+        appendLine("Name:        ${entryName ?: prog.name}")
+        if (entryName != null && entryName != prog.name) {
+            appendLine("Imported as: ${prog.name}")
+        }
         appendLine("Format:      ${prog.executableFormat}")
         appendLine("Language:    ${prog.languageID}")
         appendLine("Compiler:    ${prog.compiler}")
