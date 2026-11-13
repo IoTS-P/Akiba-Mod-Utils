@@ -235,6 +235,10 @@ class AkibaUtils(
                 }
             }
         }
+        // The project is open right now — publish its tree while that is true. Doing
+        // this after the turn runs into a project the module may already have released.
+        publishProjectIndex(System.currentTimeMillis())
+
         // A chat session started without a binary has no Ghidra program. That
         // is a supported mode: the turn still runs, but only the tools that do
         // not touch a program are registered (see [PROGRAM_FREE_TOOLS]).
@@ -348,7 +352,6 @@ class AkibaUtils(
                     reportTurnFinished(turn.turnId, "failed", status)
                 }
             }
-            refreshProjectIndex(startedAt)
         }
     }
 
@@ -391,20 +394,60 @@ class AkibaUtils(
     }
 
     /**
-     * Rebuilds the project's file index after a turn.
+     * Hands the project's file tree to the server after a turn.
      *
-     * The worker is the only process that can read a project it holds open, so the
-     * server's own refresh cannot see this project's tree while this process lives.
+     * This process holds the project open, so the server cannot read the tree, and this
+     * process has no database pool — the only path left is to read it here and post it.
      */
-    private fun refreshProjectIndex(turnStartedAtMs: Long) {
+    private fun publishProjectIndex(turnStartedAtMs: Long) {
         val project = System.getenv("AKIBA_MANUAL_AGENT_PROJECT_NAME")?.takeIf { it.isNotBlank() } ?: return
         runCatching {
-            val root = java.nio.file.Path.of("ghidra_projects").toAbsolutePath().normalize()
-            val wasIndexed = org.iotsplab.akiba.managers.ProjectIndex.refresh(project, root)
+            // Walk the project this process already has open: reopening it here would
+            // hand back a second, empty view.
+            val tree = mutableListOf<Map<String, Any?>>()
+            val root = WorkspaceManager.project.projectData.rootFolder
+            walkProjectFolder(root, "", tree)
             logger.info(
-                "AkibaUtils: project index refresh after turn (project={}, ok={}, turn took {} ms)",
-                project, wasIndexed, System.currentTimeMillis() - turnStartedAtMs)
-        }.onFailure { logger.warn("AkibaUtils: project index refresh failed: ${it.message}") }
+                "AkibaUtils: index walk root={} folders={} files={} total={}",
+                root.name, root.folders.size, root.files.size, tree.size)
+            val payload = mapOf(
+                "project" to project,
+                "entries" to tree,
+            )
+            val body = jacksonObjectMapper().writeValueAsString(payload)
+            val request = HttpRequest.newBuilder()
+                .uri(URI.create("${serverBase()}/api/agent/internal/project/index"))
+                .timeout(Duration.ofSeconds(30))
+                .header("Content-Type", "application/json")
+                .header(InternalToken.HEADER, internalToken())
+                .header("X-Akiba-Instance", instanceName())
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build()
+            val response = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build()
+                .send(request, HttpResponse.BodyHandlers.ofString())
+            logger.info(
+                "AkibaUtils: project index publish (project={}, entries={}, http={}, turn took {} ms, body={})",
+                project, tree.size, response.statusCode(),
+                System.currentTimeMillis() - turnStartedAtMs, response.body().take(120))
+        }.onFailure { logger.warn("AkibaUtils: project index publish failed: ${it.message}") }
+    }
+
+    /** Flattens the open project's tree into the rows the server's index stores. */
+    private fun walkProjectFolder(
+        folder: ghidra.framework.model.DomainFolder,
+        prefix: String,
+        out: MutableList<Map<String, Any?>>,
+    ) {
+        for (sub in folder.folders) {
+            out.add(mapOf("path" to "$prefix${sub.name}", "name" to sub.name, "folder" to true))
+            walkProjectFolder(sub, "$prefix${sub.name}/", out)
+        }
+        for (file in folder.files) {
+            out.add(mapOf(
+                "path" to "$prefix${file.name}", "name" to file.name, "folder" to false,
+                "size" to file.length(), "modified" to 0,
+            ))
+        }
     }
 
     /** True once the server has been told to stop this turn. */
