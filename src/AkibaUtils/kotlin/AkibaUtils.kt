@@ -16,6 +16,8 @@ import org.iotsplab.akiba.utils.DoNotCreateTable
 import org.iotsplab.akiba.utils.WithConfigClass
 import org.iotsplab.akiba.managers.WorkspaceManager
 import java.net.URI
+import java.nio.file.Files
+import org.iotsplab.akiba.utils.InternalToken
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
@@ -115,9 +117,12 @@ class AkibaUtils(
         logger.info("AkibaUtils: Bundled resource installation complete.")
         scriptSeeded = true
 
-        if (System.getenv("AKIBA_MANUAL_AGENT") == "1") {
+        if (System.getenv("AKIBA_PROJECT_WORKERS") == "1") {
+            logger.info("AkibaUtils: resident project worker detected")
+            runResidentWorker()
+        } else if (System.getenv("AKIBA_MANUAL_AGENT") == "1") {
             logger.info("AkibaUtils: manual agent worker mode detected")
-            runManualAgentTurn()
+            runTurn(requestManualAgentStart())
         }
     }
 
@@ -144,9 +149,8 @@ class AkibaUtils(
     /**
      * Parse metadata annotations from script source header comments.
      */
-    private suspend fun runManualAgentTurn() {
-        val start = requestManualAgentStart()
-        installBundledSkillsForUser(start.username)
+    private suspend fun runTurn(turn: TurnPayload) {
+        installBundledSkillsForUser(turn.username)
 
         // ---- Publish the sessionId / agent on `this` so tool helpers can
         // ---- find them.  The framework's regular `startProcess` would have
@@ -161,7 +165,7 @@ class AkibaUtils(
         // which means the `read_workspace_file` / `write_workspace_file`
         // confirmation modal never appears for absolute paths and the
         // user has no way to approve them.
-        agentSessionId = start.sessionId
+        agentSessionId = turn.sessionId
 
         val agentDbClient = AgentDatabaseClient(dbClient)
         val llmConfig = ConfigManager.llmConf?.takeIf { it.isConfigured }?.toLLMConfig()
@@ -173,7 +177,7 @@ class AkibaUtils(
         // is passed via the manual-agent handshake.  For binary-based
         // sessions, AkibaModule.program was already set at construction.
         if (program == null) {
-            val programPath = start.programName
+            val programPath = turn.programName
             if (programPath != null) {
                 logger.info("AkibaUtils: opening program '$programPath' for manual agent turn")
                 try {
@@ -213,20 +217,20 @@ class AkibaUtils(
         // not touch a program are registered (see [PROGRAM_FREE_TOOLS]).
         if (program == null) {
             logger.warn(
-                "AkibaUtils: no Ghidra program for this session (programName=${start.programName}) " +
+                "AkibaUtils: no Ghidra program for this session (programName=${turn.programName}) " +
                     "- running with program-free tools only"
             )
         }
 
-        val allTools = BuiltInTools.all(this, agentDbClient, start.username).filter { it.name != "run_shell" }
+        val allTools = BuiltInTools.all(this, agentDbClient, turn.username).filter { it.name != "run_shell" }
         val toolList = if (program == null) allTools.filter { it.name in PROGRAM_FREE_TOOLS } else allTools
 
         val agent = akibaAgent {
             config(llmConfig)
             tools(toolList)
-            system(start.systemPrompt)
-            session(start.sessionId)
-            memory(persistentChatMemory(agentDbClient, start.sessionId))
+            system(turn.systemPrompt)
+            session(turn.sessionId)
+            memory(persistentChatMemory(agentDbClient, turn.sessionId))
             enrichSystemPrompt(true)
             auditToolCalls(true)
             maxIterations(20)
@@ -241,7 +245,7 @@ class AkibaUtils(
         this.agent = agent
 
         try {
-            val result = agent.run(start.content)
+            val result = agent.run(turn.content)
             // Runtime-state model: a finished turn parks the session at
             // "closed" (the /chat route flips it back to "running" at the
             // start of the next turn).  Do NOT use the legacy "active"
@@ -253,7 +257,7 @@ class AkibaUtils(
                 else -> org.iotsplab.akiba.llm.agent.runtime.RuntimeState.ERROR
             }
             agentDbClient.setRuntimeState(
-                start.sessionId, state.wire(),
+                turn.sessionId, state.wire(),
                 "manual_chat_turn_${result.stopReason.name.lowercase()}"
             )
             logger.info("AkibaUtils: manual agent turn completed, stopReason=${result.stopReason}")
@@ -261,14 +265,14 @@ class AkibaUtils(
             logger.error("AkibaUtils: manual agent turn failed: ${e.message}")
             runCatching {
                 agentDbClient.appendMessages(
-                    start.sessionId,
+                    turn.sessionId,
                     listOf(AgentDatabaseClient.MessageData(
                         role = "assistant",
                         content = "Manual agent worker failed: ${e.message ?: e.javaClass.name}"
                     ))
                 )
                 agentDbClient.setRuntimeState(
-                    start.sessionId,
+                    turn.sessionId,
                     org.iotsplab.akiba.llm.agent.runtime.RuntimeState.ERROR.wire(),
                     "manual_chat_turn_exception"
                 )
@@ -290,6 +294,101 @@ class AkibaUtils(
         }
     }
 
+    /**
+     * Serves turns until the process is stopped.
+     *
+     * The worker owns the conversation with the model: it asks for the next turn, runs it
+     * with everything the request carried, and reports the outcome. Nothing calls back for
+     * details, so a turn the worker is running cannot drift out of step with the server.
+     */
+    private suspend fun runResidentWorker() {
+        while (true) {
+            val turn = nextTurn() ?: continue
+            try {
+                runTurn(turn)
+                reportTurnFinished(turn.turnId, "ok", null)
+            } catch (e: Exception) {
+                logger.error("AkibaUtils: turn ${turn.turnId} failed: ${e.message}", e)
+                reportTurnFinished(turn.turnId, "failed", e.message ?: e.javaClass.simpleName)
+            }
+        }
+    }
+
+    /** Blocks on the server's long poll; null means the wait expired with no work. */
+    private fun nextTurn(): TurnPayload? {
+        val project = System.getenv("AKIBA_MANUAL_AGENT_PROJECT_NAME")?.takeIf { it.isNotBlank() }
+            ?: throw IllegalStateException("AKIBA_MANUAL_AGENT_PROJECT_NAME is not set")
+        val request = HttpRequest.newBuilder()
+            .uri(URI.create("${serverBase()}/api/agent/internal/turn/next?project=${enc(project)}&waitMs=20000"))
+            .timeout(Duration.ofSeconds(40))
+            .header(InternalToken.HEADER, internalToken())
+            .header("X-Akiba-Instance", instanceName())
+            .GET()
+            .build()
+        val response = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build()
+            .send(request, HttpResponse.BodyHandlers.ofString())
+        if (response.statusCode() !in 200..299) {
+            throw IllegalStateException("turn poll failed: HTTP ${response.statusCode()} ${response.body()}")
+        }
+        val mapper = jacksonObjectMapper()
+        val root = mapper.readTree(response.body())
+        val node = root.get("turn") ?: return null
+        if (node.isNull) return null
+        return TurnPayload(
+            turnId = node.path("id").asText(),
+            sessionId = node.path("sessionId").asText(),
+            content = node.path("prompt").asText(),
+            systemPrompt = node.path("systemPrompt").asText(""),
+            username = node.path("username").asText("akiba"),
+            programName = node.path("programName").takeIf { !it.isNull }?.asText(),
+        )
+    }
+
+    private fun reportTurnFinished(turnId: String, status: String, error: String?) {
+        val body = jacksonObjectMapper().writeValueAsString(
+            mapOf("turnId" to turnId, "status" to status, "error" to error)
+        )
+        val request = HttpRequest.newBuilder()
+            .uri(URI.create("${serverBase()}/api/agent/internal/turn/finished"))
+            .timeout(Duration.ofSeconds(15))
+            .header("Content-Type", "application/json")
+            .header(InternalToken.HEADER, internalToken())
+            .header("X-Akiba-Instance", instanceName())
+            .POST(HttpRequest.BodyPublishers.ofString(body))
+            .build()
+        runCatching {
+            HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build()
+                .send(request, HttpResponse.BodyHandlers.discarding())
+        }
+    }
+
+    private fun serverBase(): String {
+        val port = System.getenv("AKIBA_MANUAL_AGENT_SERVER_PORT")?.toIntOrNull()
+            ?: throw IllegalStateException("AKIBA_MANUAL_AGENT_SERVER_PORT is not set")
+        return "http://127.0.0.1:$port"
+    }
+
+    private fun instanceName(): String =
+        System.getenv("AKIBA_MANUAL_AGENT_INSTANCE")?.takeIf { it.isNotBlank() } ?: "akiba-instance"
+
+    private fun internalToken(): String = try {
+        Files.readString(InternalToken.file).trim()
+    } catch (e: Exception) {
+        throw IllegalStateException("cannot read the internal token: ${e.message}")
+    }
+
+    private fun enc(value: String): String = java.net.URLEncoder.encode(value, "UTF-8")
+
+    /** One turn, as delivered by the server. */
+    private data class TurnPayload(
+        val sessionId: String,
+        val content: String,
+        val systemPrompt: String,
+        val username: String = "akiba",
+        val programName: String? = null,
+        val turnId: String = "",
+    )
+
     /** Recursively find the first Ghidra Program file in a project
      *  folder tree (subfolders included). */
     private fun findFirstProgramFile(
@@ -305,7 +404,7 @@ class AkibaUtils(
         return null
     }
 
-    private fun requestManualAgentStart(): ManualAgentStartResponse {
+    private fun requestManualAgentStart(): TurnPayload {
         val token = System.getenv("AKIBA_MANUAL_AGENT_TOKEN")
             ?: throw IllegalStateException("AKIBA_MANUAL_AGENT_TOKEN is not set")
         val port = System.getenv("AKIBA_MANUAL_AGENT_SERVER_PORT")?.toIntOrNull()
@@ -326,16 +425,15 @@ class AkibaUtils(
         if (response.statusCode() !in 200..299) {
             throw IllegalStateException("Manual agent start request failed: HTTP ${response.statusCode()} ${response.body()}")
         }
-        return mapper.readValue(response.body())
+        val node = mapper.readTree(response.body())
+        return TurnPayload(
+            sessionId = node.path("sessionId").asText(),
+            content = node.path("content").asText(),
+            systemPrompt = node.path("systemPrompt").asText(""),
+            username = node.path("username").asText("akiba"),
+            programName = node.path("programName").takeIf { !it.isNull }?.asText(),
+        )
     }
-
-    private data class ManualAgentStartResponse(
-        val sessionId: String,
-        val content: String,
-        val systemPrompt: String,
-        val username: String = "akiba",
-        val programName: String? = null
-    )
 
     companion object {
         private var scriptSeeded: Boolean = false
