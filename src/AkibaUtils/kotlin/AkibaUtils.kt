@@ -182,6 +182,7 @@ class AkibaUtils(
         // user has no way to approve them.
         agentSessionId = turn.sessionId
 
+        ensureProjectOpen()
         val agentDbClient = AgentDatabaseClient(dbClient)
         // A resident worker has no model of its own: the turn says where to send the
         // messages and with which key, so switching model or provider takes effect on the
@@ -330,6 +331,9 @@ class AkibaUtils(
         }
         } finally {
             lease.release()
+            // Holding the project between turns locks the UI out of it: the Projects page
+            // cannot import or list files while this process owns the .ulock.
+            releaseProjectQuietly()
         }
     }
 
@@ -438,6 +442,29 @@ class AkibaUtils(
                 project, tree.size, response.statusCode(),
                 System.currentTimeMillis() - turnStartedAtMs, response.body().take(120))
         }.onFailure { logger.warn("AkibaUtils: project index publish failed: ${it.message}") }
+    }
+
+    /** Opens the project again after the previous turn released it. */
+    private fun ensureProjectOpen() {
+        if (WorkspaceManager.isProjectInitialized) return
+        val name = System.getenv("AKIBA_MANUAL_AGENT_PROJECT_NAME")?.takeIf { it.isNotBlank() } ?: return
+        if (name.contains(':')) return   // a session-only key, not a real project
+        runCatching {
+            WorkspaceManager.openOrCreateInteractiveProject(
+                name, false, java.nio.file.Path.of("ghidra_projects").toAbsolutePath().normalize())
+            logger.info("AkibaUtils: reopened project '$name' for this turn")
+        }.onFailure { logger.error("AkibaUtils: could not reopen project '$name': ${it.message}") }
+    }
+
+    /** Gives the project back so the UI can use it between turns. */
+    private fun releaseProjectQuietly() {
+        runCatching {
+            if (WorkspaceManager.isProjectInitialized) {
+                WorkspaceManager.releaseActiveProject()
+                logger.info("AkibaUtils: released the project after the turn")
+            }
+        }.onFailure { logger.warn("AkibaUtils: release failed: ${it.message}") }
+        program = null
     }
 
     /** Flattens the open project's tree into the rows the server's index stores. */
