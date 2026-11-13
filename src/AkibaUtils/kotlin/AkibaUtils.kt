@@ -9,6 +9,8 @@ import ghidra.program.model.listing.Program
 import org.iotsplab.akiba.utils.WithBundledSkills
 import org.iotsplab.akiba.utils.WithScriptFile
 import org.iotsplab.akiba.llm.agent.builder.akibaAgent
+import org.iotsplab.akiba.llm.client.LLMConfig
+import org.iotsplab.akiba.llm.client.LLMProvider
 import org.iotsplab.akiba.llm.memory.persistentChatMemory
 import org.iotsplab.akiba.llm.tool.core.BuiltInTools
 import org.iotsplab.akiba.managers.ConfigManager
@@ -168,7 +170,11 @@ class AkibaUtils(
         agentSessionId = turn.sessionId
 
         val agentDbClient = AgentDatabaseClient(dbClient)
-        val llmConfig = ConfigManager.llmConf?.takeIf { it.isConfigured }?.toLLMConfig()
+        // A resident worker has no model of its own: the turn says where to send the
+        // messages and with which key, so switching model or provider takes effect on the
+        // next message. The config file is only a fallback for the one-shot worker.
+        val llmConfig = turn.llm?.toLlmConfig()
+            ?: ConfigManager.llmConf?.takeIf { it.isConfigured }?.toLLMConfig()
             ?: throw IllegalStateException("Manual agent worker requires llm config")
 
         // Open the program from the project so tools (run_script,
@@ -341,6 +347,14 @@ class AkibaUtils(
             systemPrompt = node.path("systemPrompt").asText(""),
             username = node.path("username").asText("akiba"),
             programName = node.path("programName").takeIf { !it.isNull }?.asText(),
+            llm = node.path("llm").takeIf { !it.isNull && !it.isMissingNode }?.let { wire ->
+                LlmWire(
+                    provider = wire.path("provider").asText(),
+                    modelName = wire.path("modelName").asText(),
+                    apiKey = wire.path("apiKey").asText(),
+                    baseUrl = wire.path("baseUrl").takeIf { !it.isNull }?.asText(),
+                )
+            },
         )
     }
 
@@ -387,7 +401,27 @@ class AkibaUtils(
         val username: String = "akiba",
         val programName: String? = null,
         val turnId: String = "",
+        val llm: LlmWire? = null,
     )
+
+    /** Where this turn talks to the model, and with what key. */
+    private data class LlmWire(
+        val provider: String,
+        val modelName: String,
+        val apiKey: String,
+        val baseUrl: String? = null,
+    )
+
+    private fun LlmWire.toLlmConfig(): LLMConfig {
+        val resolved = LLMProvider.fromString(provider)
+            ?: throw IllegalStateException("Unknown LLM provider '$provider'")
+        return LLMConfig(
+            provider = resolved,
+            modelName = modelName,
+            apiKey = apiKey,
+            baseUrl = baseUrl,
+        )
+    }
 
     /** Recursively find the first Ghidra Program file in a project
      *  folder tree (subfolders included). */
