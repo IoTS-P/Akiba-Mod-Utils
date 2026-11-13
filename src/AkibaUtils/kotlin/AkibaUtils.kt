@@ -10,6 +10,12 @@ import org.iotsplab.akiba.utils.WithBundledSkills
 import org.iotsplab.akiba.utils.WithScriptFile
 import org.iotsplab.akiba.llm.agent.builder.akibaAgent
 import org.iotsplab.akiba.llm.client.LLMConfig
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import org.iotsplab.akiba.managers.ProgramScheduler
 import org.iotsplab.akiba.llm.client.LLMProvider
 import org.iotsplab.akiba.llm.memory.persistentChatMemory
@@ -278,6 +284,9 @@ class AkibaUtils(
                 "manual_chat_turn_${result.stopReason.name.lowercase()}"
             )
             logger.info("AkibaUtils: manual agent turn completed, stopReason=${result.stopReason}")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // A stop is not a failure: the route already parked the session as closed.
+            throw e
         } catch (e: Exception) {
             logger.error("AkibaUtils: manual agent turn failed: ${e.message}")
             runCatching {
@@ -330,14 +339,89 @@ class AkibaUtils(
     private suspend fun runResidentWorker() {
         while (true) {
             val turn = nextTurn() ?: continue
+            val startedAt = System.currentTimeMillis()
+            when (val status = runTurnUnlessStopped(turn)) {
+                STATUS_OK -> reportTurnFinished(turn.turnId, STATUS_OK, null)
+                STATUS_CANCELLED -> reportTurnFinished(turn.turnId, STATUS_CANCELLED, CANCELLED_MESSAGE)
+                else -> {
+                    logger.error("AkibaUtils: turn ${turn.turnId} failed: $status")
+                    reportTurnFinished(turn.turnId, "failed", status)
+                }
+            }
+            refreshProjectIndex(startedAt)
+        }
+    }
+
+    /**
+     * Runs [turn] until it finishes or the user stops it.
+     *
+     * The worker serves every session on the project, so a stop has to reach the turn
+     * and leave the process alone — cancelling the job stops the agent at its next
+     * suspension point (a streamed chunk, a tool call, a wait) and nothing else.
+     */
+    private suspend fun runTurnUnlessStopped(turn: TurnPayload): String {
+        val work = CoroutineScope(Dispatchers.IO).async {
             try {
                 runTurn(turn)
-                reportTurnFinished(turn.turnId, "ok", null)
+                STATUS_OK
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
-                logger.error("AkibaUtils: turn ${turn.turnId} failed: ${e.message}", e)
-                reportTurnFinished(turn.turnId, "failed", e.message ?: e.javaClass.simpleName)
+                e.message ?: e.javaClass.simpleName
             }
         }
+        val watcher = CoroutineScope(Dispatchers.IO).launch {
+            while (work.isActive) {
+                if (isCancelRequested(turn.turnId)) {
+                    logger.info("AkibaUtils: stop requested for turn ${turn.turnId}, cancelling it")
+                    work.cancel()
+                    return@launch
+                }
+                delay(500)
+            }
+        }
+        val status = try {
+            work.await()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            STATUS_CANCELLED
+        } finally {
+            watcher.cancel()
+        }
+        return status
+    }
+
+    /**
+     * Rebuilds the project's file index after a turn.
+     *
+     * The worker is the only process that can read a project it holds open, so the
+     * server's own refresh cannot see this project's tree while this process lives.
+     */
+    private fun refreshProjectIndex(turnStartedAtMs: Long) {
+        val project = System.getenv("AKIBA_MANUAL_AGENT_PROJECT_NAME")?.takeIf { it.isNotBlank() } ?: return
+        runCatching {
+            val root = java.nio.file.Path.of("ghidra_projects").toAbsolutePath().normalize()
+            val wasIndexed = org.iotsplab.akiba.managers.ProjectIndex.refresh(project, root)
+            logger.info(
+                "AkibaUtils: project index refresh after turn (project={}, ok={}, turn took {} ms)",
+                project, wasIndexed, System.currentTimeMillis() - turnStartedAtMs)
+        }.onFailure { logger.warn("AkibaUtils: project index refresh failed: ${it.message}") }
+    }
+
+    /** True once the server has been told to stop this turn. */
+    private fun isCancelRequested(turnId: String): Boolean {
+        if (turnId.isBlank()) return false
+        return runCatching {
+            val request = HttpRequest.newBuilder()
+                .uri(URI.create("${serverBase()}/api/agent/internal/turn/${enc(turnId)}/cancelled"))
+                .timeout(Duration.ofSeconds(5))
+                .header(InternalToken.HEADER, internalToken())
+                .header("X-Akiba-Instance", instanceName())
+                .GET()
+                .build()
+            val response = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
+                .send(request, HttpResponse.BodyHandlers.ofString())
+            response.statusCode() == 200 && response.body().contains("\"cancelled\":true")
+        }.getOrDefault(false)
     }
 
     /** Blocks on the server's long poll; null means the wait expired with no work. */
@@ -461,6 +545,10 @@ class AkibaUtils(
 
     companion object {
         private var scriptSeeded: Boolean = false
+
+        private const val STATUS_OK = "ok"
+        private const val STATUS_CANCELLED = "cancelled"
+        private const val CANCELLED_MESSAGE = "cancelled by user"
 
         /** Tools that work without a Ghidra program (workspace, history, skills, coordination). */
         private val PROGRAM_FREE_TOOLS: Set<String> = setOf(
