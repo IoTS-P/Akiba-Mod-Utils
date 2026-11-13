@@ -12,6 +12,7 @@ import org.iotsplab.akiba.llm.agent.builder.akibaAgent
 import org.iotsplab.akiba.llm.client.LLMConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -84,6 +85,11 @@ class AkibaUtils(
 
     /** Per worker process: this process owns the project, so it owns the queue too. */
     private val workerScheduler = ProgramScheduler()
+
+    /** Turns run on one thread, so a lease taken for a turn is released by the same thread. */
+    private val turnDispatcher = java.util.concurrent.Executors
+        .newSingleThreadExecutor { r -> Thread(r, "akiba-turn") }
+        .asCoroutineDispatcher()
 
     override fun taskPrompt(): String = ""
 
@@ -363,7 +369,9 @@ class AkibaUtils(
      * suspension point (a streamed chunk, a tool call, a wait) and nothing else.
      */
     private suspend fun runTurnUnlessStopped(turn: TurnPayload): String {
-        val work = CoroutineScope(Dispatchers.IO).async {
+        // One thread for every turn: the program lease is a thread-bound lock, so acquire
+        // and release have to happen on the same thread even across suspensions.
+        val work = CoroutineScope(turnDispatcher).async {
             try {
                 runTurn(turn)
                 STATUS_OK
