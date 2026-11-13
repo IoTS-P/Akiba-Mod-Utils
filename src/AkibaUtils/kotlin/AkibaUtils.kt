@@ -126,9 +126,6 @@ class AkibaUtils(
         if (System.getenv("AKIBA_PROJECT_WORKERS") == "1") {
             logger.info("AkibaUtils: resident project worker detected")
             runResidentWorker()
-        } else if (System.getenv("AKIBA_MANUAL_AGENT") == "1") {
-            logger.info("AkibaUtils: manual agent worker mode detected")
-            runTurn(requestManualAgentStart())
         }
     }
 
@@ -461,36 +458,6 @@ class AkibaUtils(
         return null
     }
 
-    private fun requestManualAgentStart(): TurnPayload {
-        val token = System.getenv("AKIBA_MANUAL_AGENT_TOKEN")
-            ?: throw IllegalStateException("AKIBA_MANUAL_AGENT_TOKEN is not set")
-        val port = System.getenv("AKIBA_MANUAL_AGENT_SERVER_PORT")?.toIntOrNull()
-            ?: throw IllegalStateException("AKIBA_MANUAL_AGENT_SERVER_PORT is not set")
-        val mapper = jacksonObjectMapper()
-        val body = mapper.writeValueAsString(mapOf("token" to token))
-        val request = HttpRequest.newBuilder()
-            .uri(URI.create("http://127.0.0.1:$port/api/agent/internal/manual-turn/start"))
-            .timeout(Duration.ofSeconds(30))
-            .header("Content-Type", "application/json")
-            .POST(HttpRequest.BodyPublishers.ofString(body))
-            .build()
-        logger.info("requestManualAgentStart: POST http://127.0.0.1:$port/api/agent/internal/manual-turn/start")
-        val response = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(10))
-            .build()
-            .send(request, HttpResponse.BodyHandlers.ofString())
-        if (response.statusCode() !in 200..299) {
-            throw IllegalStateException("Manual agent start request failed: HTTP ${response.statusCode()} ${response.body()}")
-        }
-        val node = mapper.readTree(response.body())
-        return TurnPayload(
-            sessionId = node.path("sessionId").asText(),
-            content = node.path("content").asText(),
-            systemPrompt = node.path("systemPrompt").asText(""),
-            username = node.path("username").asText("akiba"),
-            programName = node.path("programName").takeIf { !it.isNull }?.asText(),
-        )
-    }
 
     companion object {
         private var scriptSeeded: Boolean = false
