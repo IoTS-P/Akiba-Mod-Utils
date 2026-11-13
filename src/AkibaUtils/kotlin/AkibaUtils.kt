@@ -10,6 +10,7 @@ import org.iotsplab.akiba.utils.WithBundledSkills
 import org.iotsplab.akiba.utils.WithScriptFile
 import org.iotsplab.akiba.llm.agent.builder.akibaAgent
 import org.iotsplab.akiba.llm.client.LLMConfig
+import org.iotsplab.akiba.managers.ProgramScheduler
 import org.iotsplab.akiba.llm.client.LLMProvider
 import org.iotsplab.akiba.llm.memory.persistentChatMemory
 import org.iotsplab.akiba.llm.tool.core.BuiltInTools
@@ -74,6 +75,9 @@ class AkibaUtils(
     fileLogLevel: Level = Level.INFO,
     tableName: String? = null,
 ) : AgentModule(configPath, defaultConfig, id, program, properties ?: mapOf(), consoleLogLevel, fileLogLevel, tableName) {
+
+    /** Per worker process: this process owns the project, so it owns the queue too. */
+    private val workerScheduler = ProgramScheduler()
 
     override fun taskPrompt(): String = ""
 
@@ -177,6 +181,16 @@ class AkibaUtils(
             ?: ConfigManager.llmConf?.takeIf { it.isConfigured }?.toLLMConfig()
             ?: throw IllegalStateException("Manual agent worker requires llm config")
 
+        // One worker serves several sessions, so they take the program in turn. The lease
+        // also tells this session what the others did while it was away, which goes into
+        // the system prompt for this turn only.
+        val lease = workerScheduler.acquire(
+            programId = turn.programName ?: turn.sessionId,
+            sessionId = turn.sessionId,
+            operation = "agent-turn",
+        )
+        try {
+
         // Open the program from the project so tools (run_script,
         // script_library, etc.) have access to the Ghidra Program.
         // For project-based sessions (no binaryId), the program name
@@ -234,7 +248,7 @@ class AkibaUtils(
         val agent = akibaAgent {
             config(llmConfig)
             tools(toolList)
-            system(turn.systemPrompt)
+            system(noteFor(turn.systemPrompt, lease))
             session(turn.sessionId)
             memory(persistentChatMemory(agentDbClient, turn.sessionId))
             enrichSystemPrompt(true)
@@ -298,6 +312,15 @@ class AkibaUtils(
                 org.iotsplab.akiba.llm.agent.stream.StreamingChunkPusher.awaitQuiescence(3_000)
             }
         }
+        } finally {
+            lease.release()
+        }
+    }
+
+    /** The turn's system prompt, plus what other sessions did to the program meanwhile. */
+    private fun noteFor(system: String, lease: ProgramScheduler.Lease): String {
+        val note = lease.note() ?: return system
+        return "$system\n\n$note"
     }
 
     /**
