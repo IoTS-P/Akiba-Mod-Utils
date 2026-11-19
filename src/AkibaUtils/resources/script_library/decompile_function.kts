@@ -7,7 +7,6 @@ import org.iotsplab.akiba.script.AkibaScript
 import ghidra.app.decompiler.DecompInterface
 import ghidra.app.decompiler.DecompileOptions
 import ghidra.program.model.listing.Function
-import org.iotsplab.akiba.utils.highFunction.getCCode
 
 class DecompileFunction : AkibaScript() {
     override suspend fun execute() {
@@ -48,13 +47,25 @@ class DecompileFunction : AkibaScript() {
         appendLine("// Function: ${func.name} @ ${func.entryPoint}")
         appendLine("// Size: ${func.body.numAddresses} bytes")
         appendLine("")
+        val iface = DecompInterface()
         try {
-            appendLine(func.getCCode(timeout))
-        } catch (e: Exception) {
-            appendLine("// Decompilation failed: ${e.message}")
-            if (e is IllegalStateException && e.message?.contains("within") == true) {
-                appendLine("// This is likely a TIMEOUT. Re-run with a larger 'timeout' parameter (e.g. 300 or 600).")
+            iface.setOptions(DecompileOptions())
+            if (!iface.openProgram(program)) {
+                appendLine("// Decompilation failed: the decompiler refused to open the program")
+                return
             }
+            val results = iface.decompileFunction(func, timeout, taskGlobalMonitor)
+            if (results == null || !results.decompileCompleted()) {
+                val why = results?.errorMessage ?: "no result"
+                appendLine("// Decompilation failed: $why")
+                appendLine("// If this looks like a timeout, re-run with a larger 'timeout' parameter (e.g. 300 or 600).")
+                return
+            }
+            appendLine(results.decompiledFunction?.c ?: "// Decompilation produced no text")
+        } catch (e: Exception) {
+            appendLine("// Decompilation failed: ${e.javaClass.simpleName}: ${e.message}")
+        } finally {
+            iface.dispose()
         }
     }
 }

@@ -104,9 +104,11 @@ class FindDataTypeRefs : AkibaScript() {
                 try {
                     val locals = func.localVariables
                     val matchedLocals = mutableListOf<MatchedVar>()
-                    for (local in locals) {
+                    // A local has no ordinal of its own: its position in the list is
+                    // what tells two same-named variables apart.
+                    for ((index, local) in locals.withIndex()) {
                         if (typeMatches(local.dataType)) {
-                            matchedLocals.add(MatchedVar(local.name, local.dataType.name, local.ordinal))
+                            matchedLocals.add(MatchedVar(local.name, local.dataType.name, index))
                         }
                     }
                     if (matchedLocals.isNotEmpty()) {

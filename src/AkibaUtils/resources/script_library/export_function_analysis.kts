@@ -13,9 +13,9 @@ import ghidra.program.model.listing.Function
 import ghidra.program.model.listing.Instruction
 import ghidra.program.model.listing.CommentType
 import ghidra.program.model.pcode.PcodeOp
-import org.iotsplab.akiba.utils.highFunction.getCCodeStructure
-import org.iotsplab.akiba.utils.highFunction.getCCode
-import org.iotsplab.akiba.utils.highFunction.allStatements
+import ghidra.app.decompiler.ClangNode
+import ghidra.app.decompiler.DecompInterface
+import ghidra.app.decompiler.DecompileOptions
 import java.io.File
 
 class ExportFunctionAnalysis : AkibaScript() {
@@ -111,14 +111,29 @@ class ExportFunctionAnalysis : AkibaScript() {
         // the 'decompileTimeout' parameter.
         val decompileTimeout = ((scriptArgs["decompileTimeout"] as? Number)?.toInt() ?: 120)
             .coerceIn(10, 600)
-        val cCode = try { func.getCCode(decompileTimeout) } catch (e: Exception) {
-            appendLine("Error: decompilation failed: ${e.message}")
-            if (e is IllegalStateException && e.message?.contains("within") == true) {
-                appendLine("  This is likely a TIMEOUT. The function has $instrCount instructions,")
-                appendLine("  which may exceed the ${decompileTimeout}s decompilation budget.")
-                appendLine("  Re-run with a larger decompileTimeout (e.g. 300 or 600).")
+        // One decompiler run feeds both files: the C text and the statement
+        // markup come from the same result, so they cannot disagree.
+        val decompiler = DecompInterface()
+        var statements: List<ClangStatement> = emptyList()
+        val cCode = try {
+            decompiler.setOptions(DecompileOptions())
+            decompiler.openProgram(program)
+            val results = decompiler.decompileFunction(func, decompileTimeout, taskGlobalMonitor)
+            if (results != null && results.decompileCompleted()) {
+                statements = statementsOf(results.cCodeMarkup)
+                results.decompiledFunction?.c ?: "// Decompilation produced no text\n"
+            } else {
+                val why = results?.errorMessage ?: "no result"
+                appendLine("Error: decompilation failed: $why")
+                appendLine("  The function has $instrCount instructions; if this reads as a timeout,")
+                appendLine("  re-run with a larger decompileTimeout (e.g. 300 or 600).")
+                "// Decompilation failed: $why\n"
             }
+        } catch (e: Exception) {
+            appendLine("Error: decompilation failed: ${e.javaClass.simpleName}: ${e.message}")
             "// Decompilation failed: ${e.message}\n"
+        } finally {
+            decompiler.dispose()
         }
         val decompFile = File(funcDir, "decomp.c")
         decompFile.writeText(cCode)
@@ -134,9 +149,7 @@ class ExportFunctionAnalysis : AkibaScript() {
         mappingBuilder.appendLine("  \"totalCLines\": ${cCode.lines().size},")
         mappingBuilder.appendLine("  \"statements\": [")
 
-        val cCodeStructure = try { func.getCCodeStructure(decompileTimeout) } catch (_: Exception) { null }
-        if (cCodeStructure != null) {
-            val statements = cCodeStructure.allStatements()
+        if (statements.isNotEmpty()) {
             statements.forEachIndexed { i, stmt ->
                 val cText = stmt.toString().trim()
                 val minAddr = stmt.minAddress
@@ -193,7 +206,7 @@ class ExportFunctionAnalysis : AkibaScript() {
         mappingBuilder.appendLine("  ]")
         mappingBuilder.appendLine("}")
         mappingFile.writeText(mappingBuilder.toString())
-        val stmtCount = cCodeStructure?.allStatements()?.size ?: 0
+        val stmtCount = statements.size
         appendLine("- mapping.json: $stmtCount statement-level mappings")
 
         // ── 4. Export function metadata ──
@@ -234,5 +247,14 @@ class ExportFunctionAnalysis : AkibaScript() {
     }
 }
 
-// Re-export the allStatements extension so the script can use it.
-// This is already available via the import of ClangTokenGroup extensions.
+    /** Depth-first walk of the decompiled markup, keeping every statement node. */
+    private fun statementsOf(root: ClangNode?): List<ClangStatement> {
+        if (root == null) return emptyList()
+        val out = mutableListOf<ClangStatement>()
+        fun walk(node: ClangNode) {
+            if (node is ClangStatement) out.add(node)
+            for (i in 0 until node.numChildren()) walk(node.Child(i))
+        }
+        walk(root)
+        return out
+    }

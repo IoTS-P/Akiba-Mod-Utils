@@ -6,7 +6,6 @@
 import org.iotsplab.akiba.script.AkibaScript
 import ghidra.program.model.address.Address
 import ghidra.program.model.listing.Instruction
-import org.iotsplab.akiba.utils.binFormat.ELFStructures
 
 class EntryPointContext : AkibaScript() {
     override suspend fun execute() {
@@ -79,10 +78,10 @@ class EntryPointContext : AkibaScript() {
         // ELF e_entry is useful when external entry point markup is absent.
         try {
             if (program.executableFormat.contains("ELF", ignoreCase = true)) {
-                val elfEntry = ELFStructures(program).elfHeader.e_entry()
-                if (elfEntry != 0L) {
-                    result.add(program.addressFactory.defaultAddressSpace.getAddress(elfEntry))
-                }
+                // The loader records the file's entry point as an external entry
+                // point; that is the same number the ELF header carried.
+                val entryIter = program.symbolTable.externalEntryPointIterator
+                if (entryIter.hasNext()) result.add(entryIter.next())
             }
         } catch (_: Exception) { }
         return result

@@ -5,8 +5,6 @@
 // @dedup: args_only
 
 import org.iotsplab.akiba.script.AkibaScript
-import org.iotsplab.akiba.utils.string.RegexSearcher
-import org.iotsplab.akiba.utils.string.StringSearchResult
 import ghidra.features.base.memsearch.bytesource.AddressableByteSource
 import ghidra.features.base.memsearch.bytesource.ProgramByteSource
 import ghidra.features.base.memsearch.format.SearchFormat
@@ -68,9 +66,8 @@ class SearchMemory : AkibaScript() {
         appendLine("Conflict removal: $clearConflict")
         appendLine("")
 
-        val searcher = RegexSearcher(program, pattern, clearOverlap, clearConflict)
-        val results: List<StringSearchResult> = try {
-            searcher.search()
+        val results: List<Pair<ghidra.program.model.address.Address, String>> = try {
+            scanForPattern(program, pattern, clearOverlap, clearConflict)
         } catch (e: Exception) {
             appendLine("Error: search failed: ${e.javaClass.simpleName}: ${e.message}")
             return
@@ -85,11 +82,11 @@ class SearchMemory : AkibaScript() {
         appendLine("")
 
         for (result in results.take(limit)) {
-            val preview = result.value
+            val preview = result.second
                 .replace("\n", "\\n")
                 .replace("\r", "\\r")
                 .take(200)
-            appendLine("${result.address}: \"$preview\"")
+            appendLine("${result.first}: \"$preview\"")
         }
 
         if (results.size > limit) {
@@ -99,6 +96,41 @@ class SearchMemory : AkibaScript() {
 
         appendLine("")
         appendLine("Total: ${results.size} match(es)")
+    }
+
+    /**
+     * Match [pattern] against the bytes of every initialized block.
+     *
+     * The framework used to ship a RegexSearcher helper; it is gone, and the
+     * Ghidra memory searcher is built for byte patterns, not text. Scanning the
+     * block bytes and matching them as ISO-8859-1 keeps every byte addressable,
+     * so a reported address is the address of the match.
+     */
+    private fun scanForPattern(
+        program: ghidra.program.model.listing.Program,
+        pattern: Pattern,
+        clearOverlap: Boolean,
+        clearConflict: Boolean,
+    ): List<Pair<ghidra.program.model.address.Address, String>> {
+        val found = mutableListOf<Pair<ghidra.program.model.address.Address, String>>()
+        for (block in program.memory.blocks) {
+            if (!block.isInitialized) continue
+            // ISO-8859-1 keeps a one-to-one mapping between byte offset and
+            // character index, so a match's offset is also its address offset.
+            val text = String(block.data.readBytes(), Charsets.ISO_8859_1)
+            val matcher = pattern.matcher(text)
+            var lastEnd = -1
+            while (matcher.find() && found.size < MAX_SEARCH_RESULTS) {
+                val startIdx = matcher.start()
+                val address = block.start.add(startIdx.toLong())
+                val insideCode = clearConflict && program.listing.getInstructionAt(address) != null
+                val overlaps = clearOverlap && startIdx < lastEnd
+                if (insideCode || overlaps) continue
+                found.add(address to matcher.group())
+                lastEnd = matcher.end()
+            }
+        }
+        return found
     }
 
     // ── Exact byte search using MemorySearcher ───────────────────────────

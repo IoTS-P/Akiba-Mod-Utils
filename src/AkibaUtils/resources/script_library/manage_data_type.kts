@@ -201,7 +201,7 @@ class ManageDataType : AkibaScript() {
             appendLine("  They will fall back to their next-best match after removal.")
         }
 
-        dtm.remove(dt, TaskMonitor.DUMMY)
+        dtm.remove(dt)
         appendLine("Deleted data type '${dt.name}' from '${dt.categoryPath.path}'")
     }
 
