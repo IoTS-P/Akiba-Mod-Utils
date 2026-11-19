@@ -5,21 +5,27 @@
 // @dedup: args_only
 
 import org.iotsplab.akiba.script.AkibaScript
-import org.iotsplab.akiba.utils.assembly.DisasmHelper
+import ghidra.app.cmd.function.CreateFunctionCmd
+import ghidra.program.disassemble.Disassembler
+import ghidra.program.model.address.AddressSet
 import ghidra.program.model.listing.Function
 import java.math.BigInteger
 
 class DisassembleAndCreateFunction : AkibaScript() {
     override suspend fun execute() {
+        // `program` is nullable in the script base class: bind it once, so the rest
+        // of the script reads without a safe-call on every line.
+        val prog = program ?: run { appendLine("Error: no program is loaded"); return }
+
         val addressStr = scriptArgs["address"] as? String
             ?: run { appendLine("Error: 'address' parameter is required"); return }
 
-        val start = try { program.addressFactory.getAddress(addressStr) }
+        val start = try { prog.addressFactory.getAddress(addressStr) }
             catch (_: Exception) { null }
             ?: run { appendLine("Error: invalid address '$addressStr'"); return }
 
         // ── If a function already exists here, just report it ────────────
-        val existingFunc = program.functionManager.getFunctionAt(start)
+        val existingFunc = prog.functionManager.getFunctionAt(start)
         if (existingFunc != null) {
             appendLine("A function already exists at $start:")
             appendLine("  Name: ${existingFunc.name}")
@@ -35,7 +41,7 @@ class DisassembleAndCreateFunction : AkibaScript() {
         }
 
         // ── Validate the address is in an initialized memory block ───────
-        val block = program.memory.getBlock(start)
+        val block = prog.memory.getBlock(start)
         if (block == null) {
             appendLine("Error: address $start is not inside any memory block")
             return
@@ -58,11 +64,11 @@ class DisassembleAndCreateFunction : AkibaScript() {
                 return
             }
             for ((regName, value) in regMap) {
-                val reg = program.language.getRegister(regName)
+                val reg = prog.language.getRegister(regName)
                 if (reg == null) {
-                    appendLine("Error: register '$regName' not found in language ${program.languageID}")
+                    appendLine("Error: register '$regName' not found in language ${prog.languageID}")
                     appendLine("  Available registers can be queried via the QueryGhidraAPI tool:")
-                    appendLine("    program.language.registers")
+                    appendLine("    prog.language.registers")
                     return
                 }
                 val bigVal = parseRegisterValue(value, regName) ?: return
@@ -84,19 +90,33 @@ class DisassembleAndCreateFunction : AkibaScript() {
         appendLine("Disassembling and creating function (this may take a moment)...")
 
         // ── Disassemble and create the function ──────────────────────────
-        val helper = DisasmHelper(program)
         val monitor = taskGlobalMonitor
 
-        val txId = program.startTransaction("disassemble_and_create_function @ $start")
+        val txId = prog.startTransaction("disassemble_and_create_function @ $start")
         var committed = false
         var func: Function? = null
         try {
-            func = helper.disasmFunction(start, presetRegs, monitor)
+            // Register presets are written into the program context for this one
+            // address: that is what the disassembler reads when it decides which
+            // instruction set applies (TMode for Thumb, for instance).
+            presetRegs.forEach { (reg, value) ->
+                prog.programContext.setValue(reg, start, start, value)
+            }
+
+            val disassembler = Disassembler.getDisassembler(program, monitor, null)
+            val disassembled = disassembler.disassemble(start, null, true)
+            if (disassembled == null || disassembled.isEmpty) {
+                appendLine("Error: nothing was disassembled at $start — the bytes are not a valid instruction.")
+            } else {
+                val create = CreateFunctionCmd(AddressSet(start, start))
+                create.applyTo(program, monitor)
+                func = create.function
+            }
             committed = (func != null)
         } catch (e: Exception) {
             appendLine("Error: disassembly/creation failed: ${e.javaClass.simpleName}: ${e.message}")
         } finally {
-            program.endTransaction(txId, committed)
+            prog.endTransaction(txId, committed)
         }
 
         if (func == null) {
@@ -123,7 +143,7 @@ class DisassembleAndCreateFunction : AkibaScript() {
         appendLine("  Has custom storage: ${func.hasCustomVariableStorage()}")
 
         // ── Show the first few instructions ──────────────────────────────
-        val insnIter = program.listing.getInstructions(func.body, true)
+        val insnIter = prog.listing.getInstructions(func.body, true)
         val firstInstrs = mutableListOf<String>()
         var totalInstrs = 0
         while (insnIter.hasNext()) {
